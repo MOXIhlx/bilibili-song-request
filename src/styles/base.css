@@ -1,0 +1,50 @@
+/*
+ * 全局基础样式与设计变量。
+ * 桌面窗口使用深色主题；OBS 面板样式独立在 Panel.vue 内，不受这里影响。
+ */
+:root {
+  --bsr-bg: #0b1220;
+  --bsr-bg-elevated: #131c2e;
+  --bsr-fg: #e8eefc;
+  --bsr-muted: #93a4c4;
+  --bsr-border: #24314b;
+  --bsr-accent: #7dd3fc;
+  --bsr-accent-soft: rgba(125, 211, 252, 0.16);
+  --bsr-success: #4ade80;
+  --bsr-danger: #f87171;
+
+  color-scheme: dark;
+  font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, -apple-system, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--bsr-bg);
+  color: var(--bsr-fg);
+}
+
+/* 独立入口的 body（panel.html / dashboard.html 用于 OBS 与浏览器） */
+body.bsr-panel-body {
+  background: transparent;
+  overflow: hidden;
+}
+
+body.bsr-dashboard-body {
+  background: var(--bsr-bg);
+  padding: 18px;
+}
+
+a {
+  color: var(--bsr-accent);
+}

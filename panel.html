@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>弹幕点歌机 · OBS 面板</title>
+    <script>
+      // OBS 通过 http://127.0.0.1:<port>/panel 访问，属于同源，
+      // 因此这里不需要注入地址，前端会使用相对路径 /api 与 /ws。
+    </script>
+  </head>
+  <body class="bsr-panel-body">
+    <div id="panel"></div>
+    <script type="module" src="/src/panel.ts"></script>
+  </body>
+</html>

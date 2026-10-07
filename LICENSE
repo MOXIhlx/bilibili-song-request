@@ -1,0 +1,32 @@
+MIT License
+
+Copyright (c) 2026 bilibili-song-request contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+第三方组件许可提示：
+
+- 本程序通过 JSON IPC 调用外部程序 **mpv**（https://mpv.io/）。
+  mpv 采用 GPLv2+ / LGPLv2.1+ 双许可。若你将 mpv 与本程序一起分发
+  （例如作为 Tauri sidecar 打进安装包），请自行确保符合其许可要求，
+  并保留其许可证与来源说明。默认情况下本程序只依赖用户自行安装的 mpv。
+- 音乐平台（网易云音乐等）接口为非官方接口，仅用于本地学习研究，
+  请遵守对应平台的服务条款；本程序不包含也不分发任何音乐内容。

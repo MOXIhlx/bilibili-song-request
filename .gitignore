@@ -1,0 +1,36 @@
+# 依赖与构建产物
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/schemas/
+# scripts/rebuild-and-restart.ps1 的构建日志
+build-output.log
+
+# 编译好的可执行文件不入库
+# 放根目录的那份是本地运行用的；要分发请走 GitHub Releases
+/bilibili-song-request.exe
+
+# 本地环境
+.env
+.env.local
+*.local
+
+# 编辑器
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.iml
+*.swp
+
+# 系统
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 打包产物
+*.msi
+*.nsis.zip
+
+# 本地 mpv sidecar 二进制（体积大，不入库；见 src-tauri/binaries/README.md）
+src-tauri/binaries/mpv-*.exe
+src-tauri/binaries/*.dll

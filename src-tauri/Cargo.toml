@@ -1,0 +1,97 @@
+[package]
+name = "bilibili-song-request"
+version = "1.0.2"
+description = "本地弹幕点歌机：B站直播弹幕点歌 + mpv 播放 + OBS 浏览器源面板"
+authors = ["bilibili-song-request"]
+edition = "2021"
+rust-version = "1.77"
+license = "MIT"
+# 只有一个二进制目标，显式声明便于 `cargo run` 不带参数。
+default-run = "bilibili-song-request"
+# 发布构建时以 Windows 子系统运行（不弹控制台窗口）由 main.rs 的
+# `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` 控制.
+
+[lib]
+# Tauri 2 约定：库名为 <crate_name>_lib，供 main.rs 与移动端目标复用。
+name = "bilibili_song_request_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "bilibili-song-request"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# ── Tauri ────────────────────────────────────────────────────────────────────
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+
+# ── 异步运行时 ───────────────────────────────────────────────────────────────
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "process", "io-util"] }
+async-trait = "0.1"
+
+# ── HTTP / WebSocket ─────────────────────────────────────────────────────────
+axum = { version = "0.8", features = ["ws", "json", "query", "macros"] }
+# 只用 `ServiceExt::oneshot`：尾斜杠请求需要在 fallback 里对同一 router 重新分发一次
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "cookies", "rustls-tls", "stream", "gzip", "brotli"] }
+
+# ── 序列化 / 数据模型 ────────────────────────────────────────────────────────
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+
+# ── 播放器（mpv JSON IPC 走 Windows 命名管道）─────────────────────────────────
+interprocess = { version = "2", features = ["tokio"] }
+
+# ── 配置与密钥存储 ───────────────────────────────────────────────────────────
+directories = "5"
+# 音乐平台 Cookie 与 B 站 access_key_secret 存入系统凭据库
+keyring = { version = "3", features = ["windows-native"] }
+
+# ── 文本处理 / 签名 / 加密 ───────────────────────────────────────────────────
+regex = "1"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+# B 站开放平台在 ver=2 时推送 zlib 压缩的弹幕包，需要解压
+flate2 = "1"
+# 网易云 eapi 需要 AES-128-CBC + base64
+aes = "0.8"
+cbc = "0.1"
+# 显式声明 cipher 并开启 alloc：`encrypt_padded_vec_mut` 需要它
+cipher = { version = "0.4", features = ["alloc", "block-padding"] }
+base64 = "0.22"
+
+# ── 日志与错误处理 ───────────────────────────────────────────────────────────
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+anyhow = "1"
+thiserror = "2"
+
+[features]
+# Tauri 2 的默认特性：自定义协议用于资源加载。
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+# 集成测试（tests.rs）里用于发起 HTTP / WS 请求。
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
+# 注意：这里**不要**加 `panic = "abort"`。
+# 它会让 `cargo test --release`（以及任何引用 lib 的 `--release` 测试目标）
+# 直接失败：`the `panic` setting is ignored for `test` profile`
+# / `cannot use `panic = "abort"` with test harness`。本项目的收益很小，
+# 换来的是「发布配置无法跑测试」这种很坑的副作用。
