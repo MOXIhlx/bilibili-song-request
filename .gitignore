@@ -6,6 +6,7 @@ src-tauri/gen/schemas/
 # scripts/rebuild-and-restart.ps1 的构建日志
 build-output.log
 tauri-build.log
+release-build.log
 
 # 编译好的可执行文件不入库
 # 放根目录的那份是本地运行用的；要分发请走 GitHub Releases
@@ -35,3 +36,7 @@ Desktop.ini
 # 本地 mpv sidecar 二进制（体积大，不入库；见 src-tauri/binaries/README.md）
 src-tauri/binaries/mpv-*.exe
 src-tauri/binaries/*.dll
+
+# 本地打包的便携版产物（分发用，见 docs/安装环境.md）
+dist-portable/
+*.zip
