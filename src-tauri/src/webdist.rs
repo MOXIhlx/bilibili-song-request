@@ -6,13 +6,20 @@
 //!
 //!  1. 环境变量 `BSR_DIST_DIR`（调试用，优先级最高）
 //!  2. exe 同级的 `dist/`
-//!  3. exe 上一级的 `dist/`（打包安装后常见位置）
-//!  4. exe 向上 3~4 级的 `dist/`
+//!  3. exe 同级的 `_up_/dist/`（**安装包布局**，见下）
+//!  4. exe 上一级的 `dist/`（打包安装后常见位置）
+//!  5. exe 向上 3~4 级的 `dist/`
 //!     —— 覆盖 `cargo run` 的开发场景：`src-tauri/target/debug/x.exe`
 //!        向上 3 级到 `src-tauri/`、4 级到仓库根，而 `dist/` 在仓库根。
-//!  5. 当前工作目录与其父目录下的 `dist/`
+//!  6. 当前工作目录与其父目录下的 `dist/`
 //!
 //! 找不到时返回一个自解释的提示页，而不是 404 —— 主播看到提示比看到空白好。
+//!
+//! ⚠️ 为什么会有 `_up_` 这种怪名字：Tauri 打包 `resources` 时会把源路径里的
+//! `..` 分量重写成 `_up_`（见 tauri-utils 的 `resource_relpath`），
+//! 而 Windows 上 `resource_dir()` 就是 **exe 所在目录**。
+//! 我们在 `tauri.conf.json` 里配了 `resources: ["../dist"]`，
+//! 安装后就落在 `<安装目录>/_up_/dist/`，所以必须探这一层。
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -43,6 +50,8 @@ pub fn dist_dir() -> Option<&'static PathBuf> {
                 for _ in 0..EXE_ANCESTOR_LEVELS {
                     let Some(current) = base else { break };
                     candidates.push(current.join("dist"));
+                    // 安装包布局：`resources: ["../dist"]` 会被 Tauri 存成 `_up_/dist`
+                    candidates.push(current.join("_up_").join("dist"));
                     base = current.parent();
                 }
             }

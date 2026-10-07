@@ -1217,23 +1217,33 @@ npm run tauri:build
 
 | 路径 | 说明 |
 |------|------|
-| `release/bilibili-song-request.exe` | 免安装绿色版 exe（前端资源已内嵌，约 12MB） |
-| `nsis/bilibili-song-request_<版本>_x64-setup.exe` | NSIS 安装包（需要额外开启，见下） |
+| `release/bilibili-song-request.exe` | 免安装绿色版 exe（约 12.6 MB） |
+| `release/_up_/dist/` | 前端资源，**必须与 exe 同级保留**（绿色版靠它提供面板页） |
+| `nsis/bilibili-song-request_<版本>_x64-setup.exe` | NSIS 安装包（约 3.6 MB，**自带前端**） |
 
-> **当前默认只出绿色版**：`tauri.conf.json` 里 `bundle.active` 为 `false`，
-> 这样 `npm run tauri:build` 一定能成功（`cargo build --release` + 内嵌资源）。
+> **绿色版与安装包的区别**：
+> 绿色版 exe **不内嵌** OBS 面板用的前端资源——那些页面由程序自建的 HTTP 服务器
+> 从磁盘读取，所以 `_up_/dist/` 必须跟着 exe 一起走（整个 `release/` 目录拷走即可）。
+> 安装包则通过 `bundle.resources` 把前端一起装进去，装完是独立程序。
 >
-> 需要安装包时把 `bundle.active` 改成 `true` 再执行
-> `npx tauri bundle --bundles nsis`。首次会自动下载 NSIS 工具链到
-> `%LOCALAPPDATA%\tauri\`（约 2.3MB）。
->
-> ⚠️ 开发这台机器上该步骤**未能成功**：tauri-bundler 解压 NSIS 时报
-> `Failed to open file: Os { code: 5, PermissionDenied }`（杀软/写盘策略拦截）。
-> 我用完全相同的方式手动下载并解压同一个 zip 是**完全正常**的
-> （2306KB → 441 个文件 / 6967KB，`Bin\makensis.exe` 458KB），
-> 说明包本身没问题，是环境拦截。若你遇到同样报错，可尝试：
-> 为 `%LOCALAPPDATA%\tauri` 与工程目录加杀软白名单，或用管理员终端执行。
-> 绿色版 exe 不受影响，可直接分发使用。
+> `tauri-build` 会在编译后**自动**把 `resources` 复制到输出目录，
+> 因此 `cargo build --release` 也会得到可用的 `release/_up_/dist/`，不需要手动拷贝。
+
+### 打包时国内网络需要代理
+
+首次打包要从 GitHub 下载 NSIS 工具链，直连会超时：
+
+```text
+Error failed to bundle project: `timeout: global`
+```
+
+给构建进程带上代理即可（工具链只下一次，缓存在 `%LOCALAPPDATA%\tauri\NSIS\`）：
+
+```powershell
+$env:HTTPS_PROXY = 'http://127.0.0.1:26561'
+$env:HTTP_PROXY  = 'http://127.0.0.1:26561'
+npm run tauri:build
+```
 
 `bundle.targets` 目前只配了 `nsis`。想要 MSI 可以改成
 `["nsis", "msi"]`（MSI 需要 WiX，Tauri 会自动下载）。

@@ -5,6 +5,7 @@ src-tauri/target/
 src-tauri/gen/schemas/
 # scripts/rebuild-and-restart.ps1 的构建日志
 build-output.log
+tauri-build.log
 
 # 编译好的可执行文件不入库
 # 放根目录的那份是本地运行用的；要分发请走 GitHub Releases
