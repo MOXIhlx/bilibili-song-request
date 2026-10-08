@@ -226,7 +226,13 @@ impl Default for PlayerConfig {
 pub struct PanelStyleConfig {
     pub theme: String,
     pub bg: String,
+    /// 主色：歌曲名、队列高亮、歌词当前行、弹幕用户名等**强调**文字与装饰。
+    ///
+    /// 早期它同时控制进度条，导致「只想改进度条颜色，结果整个面板都变了」，
+    /// 于是进度条被拆到 [`Self::bar_color`]。
     pub color: String,
+    /// 进度条填充色。空字符串 = 跟随 `color`（默认），便于只改一处就整体协调。
+    pub bar_color: String,
     /// 字体颜色；`None` = 跟随主题（阶段 9）。
     pub fg: Option<String>,
     /// 卡片/列表底色；默认 `transparent` = 只要文字不要底色（阶段 9）。
@@ -247,7 +253,9 @@ impl Default for PanelStyleConfig {
         Self {
             theme: "dark".to_string(),
             bg: "transparent".to_string(),
-            color: "#7dd3fc".to_string(),
+            color: "#ff6fa5".to_string(),
+            // 空 = 跟随主色：OBS 里只调一个颜色就能整体协调
+            bar_color: String::new(),
             fg: None,
             // 默认全透明：用户明确要求「只要文字与进度条颜色」
             surface: "transparent".to_string(),

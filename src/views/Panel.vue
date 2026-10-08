@@ -264,6 +264,8 @@ function formatDuration(seconds: number): string {
  */
 .obs-panel {
   --panel-color: #ff6fa5;
+  /* 进度条填充色。空 = 跟随主色（由 styleToCssVars 解析后写入） */
+  --panel-bar: #ff6fa5;
   --panel-fg: #5a4450;
   --panel-sub: rgba(90, 68, 80, 0.62);
   --panel-bg: transparent;
@@ -361,7 +363,8 @@ function formatDuration(seconds: number): string {
 
 .np-progress-fill {
   height: 100%;
-  background: var(--panel-color);
+  /* 进度条填充色：`--panel-bar` 由 barColor 决定，为空时已在 JS 里解析成主色 */
+  background: var(--panel-bar, var(--panel-color));
   /* 0.5s 线性过渡：进度每秒推进一次也不会跳格 */
   transition: width 0.5s linear;
 }

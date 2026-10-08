@@ -43,6 +43,8 @@ const saved = ref(false)
 type ParamName =
   | 'fontSize'
   | 'color'
+  /** 进度条填充色；`follow` = 跟随主色 */ 
+  | 'barColor'
   | 'fg'
   | 'surface'
   | 'track'
@@ -89,8 +91,38 @@ const PARAM_SPECS: Record<ParamName, ParamSpec> = {
     ],
     hint: '会乘以每个面板自己的「字号倍率」',
   },
-  color: { label: '进度条色 color', presets: [] },
-  fg: { label: '字体色 fg', presets: [] },
+  color: {
+    label: '主色 color',
+    presets: [
+      { value: '#ff6fa5', label: '#ff6fa5 主题粉' },
+      { value: '#ff9ec4', label: '#ff9ec4 浅粉' },
+      { value: '#7dd3fc', label: '#7dd3fc 天蓝' },
+      { value: '#4ade80', label: '#4ade80 绿' },
+      { value: '#fbbf24', label: '#fbbf24 琥珀' },
+    ],
+    hint: '歌曲名、队列高亮、歌词当前行等强调元素',
+  },
+  barColor: {
+    label: '进度条色 barColor',
+    presets: [
+      { value: 'follow', label: 'follow（跟随主色）' },
+      { value: '#ff6fa5', label: '#ff6fa5 主题粉' },
+      { value: '#ff9ec4', label: '#ff9ec4 浅粉' },
+      { value: '#fbbf24', label: '#fbbf24 琥珀' },
+      { value: '#4ade80', label: '#4ade80 绿' },
+    ],
+    hint: '留空或 follow = 跟随主色；只想让进度条跳色时再单独设',
+  },
+  fg: {
+    label: '字体色 fg',
+    presets: [
+      { value: '#f8fafc', label: '#f8fafc 白（深色主题）' },
+      { value: '#5a4450', label: '#5a4450 深棕（浅色主题）' },
+      { value: '#ffffff', label: '#ffffff 纯白' },
+      { value: '#000000', label: '#000000 纯黑' },
+    ],
+    hint: '给反了会看不清：深色主题用浅色字，浅色主题用深色字',
+  },
   surface: {
     label: '卡片底色 surface',
     presets: [
@@ -184,20 +216,47 @@ function makeRow(name: ParamName, value: string): ParamRow {
 }
 
 /**
+ * 面板样式出厂默认值（「恢复默认样式」用它）。
+ *
+ * 必须与后端 `PanelStyleConfig::default()` 和 `panelParams.ts` 的 `DEFAULTS`
+ * 保持一致，否则「恢复默认」后会得到一套既不是出厂、也不是用户配置的样式。
+ */
+const DEFAULT_PANEL = {
+  theme: 'dark' as const,
+  bg: 'transparent' as const,
+  color: '#ff6fa5',
+  bar_color: '',
+  fg: null,
+  surface: 'transparent',
+  track: 'transparent',
+  font_size: 16,
+  scale: 1,
+  limit: 8,
+  show_lyrics: true,
+  layout: 'list' as const,
+}
+
+/** 出厂参数行（与上面默认值对应）。 */
+const DEFAULT_PARAM_ROWS: Array<{ name: ParamName; value: string }> = [
+  { name: 'fontSize', value: '16' },
+  { name: 'color', value: DEFAULT_PANEL.color },
+  { name: 'surface', value: 'transparent' },
+  { name: 'track', value: 'transparent' },
+  { name: 'limit', value: '8' },
+]
+
+/**
  * 参数行（用户自己增删）。
  *
  * ## 为什么不是固定几个复选框
  * 之前的实现是「8 个写死的 checkbox」，想加个 `fg`（字体色）就得改代码。
  * 现在改成可选参数名的行列表：**加一行 → 选参数名 → 选预设值（或自己填）
  * → 地址立刻重算**。以后再加新参数只需往 `PARAM_SPECS` 里加一条。
+ *
+ * ⚠️ 这一区在界面上属于**高级**，默认收起：常规调样式用上面的
+ * 风格预设 + 颜色控件即可，不必理解参数名。
  */
-const paramRows = ref<ParamRow[]>([
-  makeRow('fontSize', '16'),
-  makeRow('color', '#ff6fa5'),
-  makeRow('surface', 'transparent'),
-  makeRow('track', 'transparent'),
-  makeRow('limit', '8'),
-])
+const paramRows = ref<ParamRow[]>(DEFAULT_PARAM_ROWS.map((r) => makeRow(r.name, r.value)))
 
 /** 可以新增的参数名（排除已加过的，除非允许重复）。 */
 const availableParams = computed(() =>
@@ -230,23 +289,27 @@ function hasPresets(name: ParamName): boolean {
  * 它在预设列表里没有，而下拉里选不存在的值会直接变成空串
  * （用户会看到"选了等于没选"）。所以给一个「自定义…」入口切到文本框。
  */
-const customRows = ref<Record<number, boolean>>({})
+/*
+ * 按**参数名**记录（而不是行 id）。这样「清除某项自定义」可以直接按键清掉，
+ * 不需要先找到那一行的 id；同一个参数名有多行时它们共享这个标记，可以接受。
+ */
+const customRows = ref<Record<string, boolean>>({})
 
 /** 选择预设值时的处理：选到 `__custom__` 就切到自定义输入。 */
 function onPresetChange(row: ParamRow, raw: string): void {
   if (raw === '__custom__') {
-    customRows.value[row.id] = true
+    customRows.value[row.name] = true
     // 从当前值出发，方便在预设基础上微调
     row.value = row.value === '__default__' ? '' : row.value
     return
   }
-  customRows.value[row.id] = false
+  customRows.value[row.name] = false
   row.value = raw
 }
 
 /** 让某一行退出自定义模式，回到预设下拉。 */
 function backToPresets(row: ParamRow): void {
-  customRows.value[row.id] = false
+  customRows.value[row.name] = false
   // 若当前值不在预设里，回到「默认」以免下拉显示空
   const spec = PARAM_SPECS[row.name]
   if (!spec.presets.some((p) => p.value === row.value)) row.value = ''
@@ -255,7 +318,7 @@ function backToPresets(row: ParamRow): void {
 /** 该行是否要以自定义输入框呈现。 */
 function isCustom(row: ParamRow): boolean {
   if (!hasPresets(row.name)) return true
-  if (customRows.value[row.id]) return true
+  if (customRows.value[row.name]) return true
   // 值不在预设里（例如上次填的自定义色）也自动用输入框，避免下拉显示为空
   const spec = PARAM_SPECS[row.name]
   return row.value !== '' && row.value !== '__default__' && !spec.presets.some((p) => p.value === row.value)
@@ -346,25 +409,327 @@ watch(() => store.config, ensureDraft, { immediate: true })
 /** 默认样式是否已就绪。 */
 const ready = computed(() => draft.value !== null)
 
-// ── 颜色编辑（阶段 9）────────────────────────────────────────────────────
+// ── 颜色编辑 ─────────────────────────────────────────────────────────────
 
 /** 主题对应的默认字体色（`fg` 为空时用它给取色器一个初值）。 */
 const themeFg = computed(() => (draft.value?.theme === 'light' ? '#5a4450' : '#f2f2f2'))
 
-/** 取色器回调：把颜色写进对应字段。 */
-function setColor(field: 'fg' | 'color' | 'surface' | 'track', event: Event): void {
+/** 可上色的四项：主色、进度条、字体色、卡片底色、进度条轨道。 */
+type ColorField = 'color' | 'barColor' | 'fg' | 'surface' | 'track'
+
+/** 颜色项 → 地址参数名的映射（参数名与配置字段名不同：`barColor` vs `bar_color`）。 */
+const COLOR_PARAM: Record<ColorField, ParamName> = {
+  color: 'color',
+  barColor: 'barColor',
+  fg: 'fg',
+  surface: 'surface',
+  track: 'track',
+}
+
+/**
+ * 读一个颜色项当前生效的值（**地址参数优先**，没有就回落到默认样式）。
+ *
+ * 为什么参数优先：地址才是 OBS 里真正生效的东西。界面上要显示的是
+ * 「这个源实际会看到什么颜色」，而不是「默认样式里存了什么」。
+ */
+function colorValue(field: ColorField): string {
+  const row = paramRows.value.find((r) => r.name === COLOR_PARAM[field])
+  const raw = row?.value?.trim()
+  if (raw && raw !== '__default__') {
+    // 进度条的 `follow` 是「跟随主色」，对取色器而言要显示主色
+    if (field === 'barColor' && ['follow', 'auto', 'inherit'].includes(raw.toLowerCase())) {
+      return colorValue('color')
+    }
+    return raw
+  }
+  const cfg = draft.value
+  if (!cfg) return '#000000'
+  switch (field) {
+    case 'color':
+      return cfg.color
+    case 'barColor':
+      return cfg.bar_color || cfg.color
+    case 'fg':
+      return cfg.fg ?? themeFg.value
+    case 'surface':
+      return cfg.surface === 'transparent' ? '#000000' : cfg.surface
+    case 'track':
+      return cfg.track === 'transparent' ? '#000000' : cfg.track
+  }
+}
+
+/** 该项是否被单独设置过（用于界面上标出「已自定义」）。 */
+function isColorSet(field: ColorField): boolean {
+  const row = paramRows.value.find((r) => r.name === COLOR_PARAM[field])
+  const raw = row?.value?.trim()
+  if (raw && raw !== '__default__') return true
+  const cfg = draft.value
+  if (!cfg) return false
+  switch (field) {
+    case 'color':
+      return cfg.color !== DEFAULT_PANEL.color
+    case 'barColor':
+      return Boolean(cfg.bar_color)
+    case 'fg':
+      return cfg.fg !== null
+    case 'surface':
+      return cfg.surface !== DEFAULT_PANEL.surface
+    case 'track':
+      return cfg.track !== DEFAULT_PANEL.track
+  }
+}
+
+/** 把颜色写进**地址参数行**（不存在就创建），同时更新默认样式草稿。 */
+function setColor(field: ColorField, value: string): void {
   if (!draft.value) return
-  const value = (event.target as HTMLInputElement).value
-  if (field === 'fg') draft.value.fg = value
-  else draft.value[field] = value
+  // 1) 写进地址参数：这才是 OBS 里生效的地方
+  let row = paramRows.value.find((r) => r.name === COLOR_PARAM[field])
+  if (!row) {
+    row = makeRow(COLOR_PARAM[field], value)
+    paramRows.value.push(row)
+  } else {
+    row.value = value
+  }
+  // 2) 同步默认样式草稿：点「保存默认样式」时一并落盘
+  switch (field) {
+    case 'color':
+      draft.value.color = value
+      break
+    case 'barColor':
+      draft.value.bar_color = value
+      break
+    case 'fg':
+      draft.value.fg = value
+      break
+    case 'surface':
+      draft.value.surface = value
+      break
+    case 'track':
+      draft.value.track = value
+      break
+  }
+}
+
+/**
+ * 清掉某项的自定义：地址参数行移除，默认样式回到出厂值。
+ *
+ * 进度条色清掉后是「跟随主色」，而不是变成一个固定颜色——
+ * 这样只调主色就能整体协调，符合「拆成两个」的初衷。
+ */
+function clearColor(field: ColorField): void {
+  const name = COLOR_PARAM[field]
+  paramRows.value = paramRows.value.filter((r) => r.name !== name)
+  delete customRows.value[name]
+  const cfg = draft.value
+  if (!cfg) return
+  switch (field) {
+    case 'color':
+      cfg.color = DEFAULT_PANEL.color
+      break
+    case 'barColor':
+      cfg.bar_color = ''
+      break
+    case 'fg':
+      cfg.fg = null
+      break
+    case 'surface':
+      cfg.surface = DEFAULT_PANEL.surface
+      break
+    case 'track':
+      cfg.track = DEFAULT_PANEL.track
+      break
+  }
 }
 
 /** 一键把所有底色清掉：只留文字与进度条颜色。 */
 function makeAllTransparent(): void {
   if (!draft.value) return
-  draft.value.surface = 'transparent'
-  draft.value.track = 'transparent'
+  setColor('surface', 'transparent')
+  setColor('track', 'transparent')
 }
+
+// ── 一键套用风格预设 ─────────────────────────────────────────────────────
+
+/**
+ * 风格预设。
+ *
+ * 目的：把「主题 + 背景 + 底色 + 轨道 + 字体色 + 进度条」这六项**搭配好**
+ * 一次套用，而不是让用户在参数行里逐项试。预设只写地址参数，
+ * 不动默认样式（默认样式要靠「保存默认样式」按钮才落盘）。
+ */
+interface PanelPreset {
+  key: string
+  label: string
+  desc: string
+  /** 地址参数：值 `null` = 移除该参数（回到默认）。 */
+  params: Partial<Record<ParamName, string | null>>
+}
+
+const PRESETS: PanelPreset[] = [
+  {
+    key: 'pink',
+    label: '粉白',
+    desc: '粉色调，适合浅色画面',
+    params: {
+      theme: 'light',
+      bg: 'solid',
+      color: '#ff6fa5',
+      barColor: null,
+      fg: '#5a4450',
+      surface: '#ffffffb3',
+      track: '#ffd9e6',
+    },
+  },
+  {
+    key: 'dark',
+    label: '深色',
+    desc: '白字 + 半透明黑底，浅背景上也能看清',
+    params: {
+      theme: 'dark',
+      bg: 'solid',
+      color: '#ff9ec4',
+      barColor: null,
+      fg: '#f8fafc',
+      surface: '#00000073',
+      track: '#ffffff33',
+    },
+  },
+  {
+    key: 'plain',
+    label: '纯文字',
+    desc: '全透明，只留文字与进度条',
+    params: {
+      theme: 'dark',
+      bg: 'transparent',
+      color: '#ff6fa5',
+      barColor: null,
+      fg: '#f8fafc',
+      surface: 'transparent',
+      track: 'transparent',
+    },
+  },
+]
+
+/** 当前套用的是哪个预设（参数与预设完全一致时高亮）。 */
+const activePreset = computed(() => {
+  const current = new Map(paramRows.value.map((r) => [r.name, r.value.trim()]))
+  return (
+    PRESETS.find((p) =>
+      Object.entries(p.params).every(([name, value]) => {
+        const cur = current.get(name as ParamName) ?? ''
+        if (value === null) return cur === '' || cur === '__default__'
+        return cur === value
+      }),
+    )?.key ?? null
+  )
+})
+
+/** 套用预设：把这些参数写进地址参数行（`null` 表示移除）。 */
+function applyPreset(preset: PanelPreset): void {
+  for (const [name, value] of Object.entries(preset.params)) {
+    const paramName = name as ParamName
+    const rows = paramRows.value.filter((r) => r.name === paramName)
+    if (value === null) {
+      paramRows.value = paramRows.value.filter((r) => r.name !== paramName)
+      delete customRows.value[paramName]
+      continue
+    }
+    if (rows.length) {
+      rows[0].value = value
+    } else {
+      paramRows.value.push(makeRow(paramName, value))
+    }
+  }
+}
+
+/** 最近一次套用的预设提示（1.5 秒后消失）。 */
+const presetHint = ref('')
+let presetTimer: ReturnType<typeof setTimeout> | null = null
+function applyPresetWithHint(preset: PanelPreset): void {
+  applyPreset(preset)
+  presetHint.value = `已套用「${preset.label}」`
+  if (presetTimer) clearTimeout(presetTimer)
+  presetTimer = setTimeout(() => (presetHint.value = ''), 1500)
+}
+
+/** 一键恢复出厂样式：清空所有地址参数 + 默认样式回到出厂值。 */
+function resetAllStyles(): void {
+  paramRows.value = DEFAULT_PARAM_ROWS.map((r) => makeRow(r.name, r.value))
+  customRows.value = {}
+  if (draft.value) {
+    // 背景图是用户上传的资产，不该被「恢复默认」清掉
+    draft.value = { ...DEFAULT_PANEL, bg_image: draft.value.bg_image }
+  }
+  presetHint.value = '已恢复默认样式'
+  if (presetTimer) clearTimeout(presetTimer)
+  presetTimer = setTimeout(() => (presetHint.value = ''), 1500)
+}
+
+/** 颜色项的界面元数据（顺序即界面顺序：最常调的排前面）。 */
+const COLOR_ITEMS: Array<{ field: ColorField; label: string; hint: string }> = [
+  { field: 'color', label: '主色', hint: '歌曲名、队列高亮、歌词当前行' },
+  { field: 'barColor', label: '进度条色', hint: '留空即跟随主色' },
+  { field: 'fg', label: '字体色', hint: '歌手、点歌人、时间等正文' },
+  { field: 'surface', label: '卡片底色', hint: 'transparent = 不要底色' },
+  { field: 'track', label: '进度条轨道', hint: 'transparent = 不要轨道' },
+]
+
+/**
+ * 把「布局与尺寸」里的下拉/输入同步到地址参数，同时更新默认样式草稿。
+ *
+ * 与 [`setColor`] 的差别：这几个不是颜色，但同样需要「地址 + 默认样式」双写，
+ * 否则用户在界面上改了字号却发现地址里没变（早期就是这样，只能去参数行手改）。
+ */
+function syncStyleParam(name: ParamName, value: string): void {
+  const rows = paramRows.value.filter((r) => r.name === name)
+  if (rows.length) {
+    rows[0].value = value
+  } else {
+    paramRows.value.push(makeRow(name, value))
+  }
+}
+
+/** 高级设置是否展开（默认收起，避免一上来就被参数行淹没）。 */
+const showAdvanced = ref(false)
+
+/** 这个参数是不是颜色（高级参数行里据它决定用取色器还是文本框）。 */
+function isColorParam(name: ParamName): boolean {
+  return name === 'color' || name === 'barColor' || name === 'fg' || name === 'surface' || name === 'track'
+}
+
+// ── 字体色对比度提示 ─────────────────────────────────────────────────────
+
+/** 把 `#rgb` / `#rrggbb` 解析成 0~1 的亮度；解析不了返回 null。 */
+function luminance(color: string): number | null {
+  const hex = color.trim().replace(/^#/, '')
+  const full =
+    hex.length === 3
+      ? hex
+          .split('')
+          .map((c) => c + c)
+          .join('')
+      : hex.slice(0, 6)
+  if (!/^[0-9a-f]{6}$/i.test(full)) return null
+  const r = parseInt(full.slice(0, 2), 16) / 255
+  const g = parseInt(full.slice(2, 4), 16) / 255
+  const b = parseInt(full.slice(4, 6), 16) / 255
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/**
+ * 字体色与主题是否**明显冲突**（深色主题配深字、浅色主题配浅字）。
+ *
+ * 实测踩过：theme=dark + fg=#000000 时，面板上除歌曲名外的文字几乎看不见，
+ * 而用户很难意识到是「主题和字体色不搭」。这里给一条明确提示。
+ */
+const fgConflict = computed(() => {
+  if (!draft.value || !draft.value.fg) return false
+  // 背景是透明时按主题判断：深色主题意味着画面底下大概率是暗的
+  const lum = luminance(draft.value.fg)
+  if (lum === null) return false
+  const dark = draft.value.theme === 'dark'
+  return dark ? lum < 0.35 : lum > 0.7
+})
 
 // ── 每个面板的字号倍率 ───────────────────────────────────────────────────
 
@@ -754,76 +1119,117 @@ async function copyAll(): Promise<void> {
     <p v-else-if="!ready" class="empty">正在加载配置…</p>
 
     <template v-if="ready && draft">
-      <!-- ── 默认样式 ─────────────────────────────────────────────── -->
+      <!-- ── 外观：预设 + 颜色 ───────────────────────────────────── -->
       <section class="card">
-        <h3>默认样式</h3>
+        <div class="card-head">
+          <h3>外观</h3>
+          <div class="controls">
+            <span v-if="presetHint" class="dim">{{ presetHint }}</span>
+            <button class="ghost" @click="resetAllStyles()">恢复默认外观</button>
+          </div>
+        </div>
+
+        <!-- 风格预设：一次把主题/背景/底色/轨道/字体色/进度条搭配好 -->
+        <div class="preset-row">
+          <button
+            v-for="p in PRESETS"
+            :key="p.key"
+            class="preset"
+            :class="{ active: activePreset === p.key }"
+            :title="p.desc"
+            @click="applyPresetWithHint(p)"
+          >
+            <span class="preset-chip" :data-preset="p.key" />
+            <strong>{{ p.label }}</strong>
+            <span class="dim">{{ p.desc }}</span>
+          </button>
+        </div>
+
+        <h4>颜色</h4>
+        <div class="color-grid">
+          <label v-for="c in COLOR_ITEMS" :key="c.field" class="color-item">
+            <span class="color-item-head">
+              {{ c.label }}
+              <button
+                v-if="isColorSet(c.field)"
+                class="mini"
+                title="恢复这一项"
+                @click="clearColor(c.field)"
+              >✕</button>
+            </span>
+            <span class="color-row">
+              <input
+                type="color"
+                :value="colorValue(c.field)"
+                @input="setColor(c.field, ($event.target as HTMLInputElement).value)"
+              />
+              <span class="mono">{{ colorValue(c.field) }}</span>
+            </span>
+            <span class="dim">{{ c.hint }}</span>
+          </label>
+        </div>
+        <p v-if="fgConflict" class="warn">
+          ⚠️ 当前是<strong>{{ draft.theme === 'dark' ? '深色' : '浅色' }}</strong>主题，
+          但字体色偏{{ draft.theme === 'dark' ? '暗' : '亮' }}，文字可能看不清。
+          深色主题建议用浅色字，浅色主题建议用深色字。
+        </p>
+
+        <!-- 字体色单独给一行「用主题推荐色」，避免手调出看不见的组合 -->
+        <div class="controls">
+          <button class="ghost" @click="setColor('fg', themeFg)">字体色用主题推荐值（{{ themeFg }}）</button>
+          <button class="ghost" @click="makeAllTransparent()">全部透明（只留文字与进度条）</button>
+        </div>
+      </section>
+
+      <!-- ── 布局与尺寸 ───────────────────────────────────────────── -->
+      <section class="card">
+        <h3>布局与尺寸</h3>
         <div class="fields">
           <label>主题
-            <select v-model="draft.theme">
+            <select v-model="draft.theme" @change="syncStyleParam('theme', draft.theme)">
               <option value="dark">dark（深色）</option>
               <option value="light">light（浅色）</option>
             </select>
           </label>
           <label>背景
-            <select v-model="draft.bg">
+            <select v-model="draft.bg" @change="syncStyleParam('bg', draft.bg)">
               <option value="transparent">transparent（OBS 用这个）</option>
               <option value="solid">solid（不透明）</option>
             </select>
           </label>
           <label>布局
-            <select v-model="draft.layout">
+            <select v-model="draft.layout" @change="syncStyleParam('layout', draft.layout)">
               <option value="list">list（竖向堆叠）</option>
               <option value="compact">compact（精简单行）</option>
               <option value="lyrics">lyrics（歌词为主）</option>
               <option value="wide">wide（左歌曲 / 右歌词）</option>
             </select>
           </label>
-          <label>字号 <input type="number" v-model.number="draft.font_size" /></label>
-          <label>缩放 <input type="number" step="0.1" v-model.number="draft.scale" /></label>
-          <label>队列条数 <input type="number" v-model.number="draft.limit" /></label>
+          <label>字号
+            <input
+              type="number"
+              v-model.number="draft.font_size"
+              @change="syncStyleParam('fontSize', String(draft.font_size))"
+            />
+          </label>
+          <label>队列条数
+            <input
+              type="number"
+              v-model.number="draft.limit"
+              @change="syncStyleParam('limit', String(draft.limit))"
+            />
+          </label>
           <label class="check">
-            <input type="checkbox" v-model="draft.show_lyrics" /> 显示歌词
+            <input
+              type="checkbox"
+              v-model="draft.show_lyrics"
+              @change="syncStyleParam('showLyrics', draft.show_lyrics ? 'true' : 'false')"
+            /> 显示歌词
           </label>
         </div>
-
-        <h4>颜色</h4>
-        <div class="fields">
-          <label>字体颜色
-            <span class="color-row">
-              <input type="color" :value="draft.fg ?? themeFg" @input="setColor('fg', $event)" />
-              <input v-model="draft.fg" placeholder="留空 = 跟随主题" />
-            </span>
-          </label>
-          <label>进度条颜色（强调色）
-            <span class="color-row">
-              <input type="color" :value="draft.color" @input="setColor('color', $event)" />
-              <input v-model="draft.color" placeholder="#ff6fa5" />
-            </span>
-          </label>
-          <label>卡片底色
-            <span class="color-row">
-              <input
-                type="color"
-                :value="draft.surface === 'transparent' ? '#000000' : draft.surface"
-                @input="setColor('surface', $event)"
-              />
-              <input v-model="draft.surface" placeholder="transparent = 不要底色" />
-            </span>
-          </label>
-          <label>进度条轨道
-            <span class="color-row">
-              <input
-                type="color"
-                :value="draft.track === 'transparent' ? '#000000' : draft.track"
-                @input="setColor('track', $event)"
-              />
-              <input v-model="draft.track" placeholder="transparent = 不要轨道" />
-            </span>
-          </label>
-        </div>
-        <div class="controls">
-          <button class="ghost" @click="makeAllTransparent()">全部透明（只留文字与进度条）</button>
-        </div>
+        <p class="dim">
+          这些会同时写进面板地址与默认样式。地址里的值优先，所以每个 OBS 浏览器源可以各调各的。
+        </p>
       </section>
 
       <!-- ── 背景图（阶段 9，阶段 10b 改为下拉选择 + 预览）────────── -->
@@ -934,67 +1340,78 @@ async function copyAll(): Promise<void> {
         </ul>
       </section>
 
-      <!-- ── 参数行（阶段 9）─────────────────────────────────────── -->
+      <!-- ── 高级：原始参数行 ─────────────────────────────────────── -->
       <section class="card">
         <div class="card-head">
-          <h3>地址参数</h3>
-          <div class="controls">
+          <h3>
+            高级：地址参数
+            <button class="ghost" @click="showAdvanced = !showAdvanced">
+              {{ showAdvanced ? '收起 ▲' : '展开 ▼' }}
+            </button>
+          </h3>
+          <div v-if="showAdvanced" class="controls">
             <button class="ghost" @click="addParamRow()">+ 添加参数</button>
           </div>
         </div>
-        <ul v-if="paramRows.length" class="param-list">
-          <li v-for="row in paramRows" :key="row.id">
-            <select v-model="row.name">
-              <option v-for="p in availableParams" :key="p.name" :value="p.name">
-                {{ p.label }}
-              </option>
-            </select>
-
-            <!--
-              有预设的参数：默认给下拉（第一项「默认」+「自定义…」）；
-              选了自定义、或当前值不在预设里，就切成输入框。
-            -->
-            <template v-if="hasPresets(row.name) && !isCustom(row)">
-              <select :value="row.value" @change="onPresetChange(row, ($event.target as HTMLSelectElement).value)">
-                <option value="__default__">默认</option>
-                <option v-for="opt in PARAM_SPECS[row.name].presets" :key="opt.value" :value="opt.value">
-                  {{ opt.label }}
+        <p v-if="!showAdvanced" class="dim">
+          上面的外观与布局设置已经会自动写进地址。需要手写参数（例如给某个源单独加
+          <code>scale</code>）时再展开。
+        </p>
+        <template v-else>
+          <ul v-if="paramRows.length" class="param-list">
+            <li v-for="row in paramRows" :key="row.id">
+              <select v-model="row.name">
+                <option v-for="p in availableParams" :key="p.name" :value="p.name">
+                  {{ p.label }}
                 </option>
-                <option value="__custom__">自定义…</option>
               </select>
-            </template>
-            <template v-else>
-              <!-- 颜色类：取色器 + 文本框（文本框里可写带透明度的 8 位色值） -->
-              <span
-                v-if="row.name === 'color' || row.name === 'fg' || row.name === 'surface' || row.name === 'track'"
-                class="color-row"
-              >
-                <input
-                  type="color"
-                  :value="row.value && /^#[0-9a-f]{6}$/i.test(row.value.slice(0, 7)) ? row.value.slice(0, 7) : '#000000'"
-                  @input="row.value = ($event.target as HTMLInputElement).value"
-                />
-                <input v-model="row.value" :placeholder="PARAM_SPECS[row.name].hint ?? '留空 = 默认'" />
+
+              <!--
+                有预设的参数：默认给下拉（第一项「默认」+「自定义…」）；
+                选了自定义、或当前值不在预设里，就切成输入框。
+              -->
+              <template v-if="hasPresets(row.name) && !isCustom(row)">
+                <select :value="row.value" @change="onPresetChange(row, ($event.target as HTMLSelectElement).value)">
+                  <option value="__default__">默认</option>
+                  <option v-for="opt in PARAM_SPECS[row.name].presets" :key="opt.value" :value="opt.value">
+                    {{ opt.label }}
+                  </option>
+                  <option value="__custom__">自定义…</option>
+                </select>
+              </template>
+              <template v-else>
+                <!-- 颜色类：取色器 + 文本框（文本框里可写带透明度的 8 位色值） -->
+                <span
+                  v-if="isColorParam(row.name)"
+                  class="color-row"
+                >
+                  <input
+                    type="color"
+                    :value="row.value && /^#[0-9a-f]{6}$/i.test(row.value.slice(0, 7)) ? row.value.slice(0, 7) : '#000000'"
+                    @input="row.value = ($event.target as HTMLInputElement).value"
+                  />
+                  <input v-model="row.value" :placeholder="PARAM_SPECS[row.name].hint ?? '留空 = 默认'" />
+                </span>
+                <input v-else v-model="row.value" :placeholder="PARAM_SPECS[row.name].hint ?? '留空 = 默认'" />
+                <button
+                  v-if="hasPresets(row.name)"
+                  class="ghost"
+                  title="回到预设选项"
+                  @click="backToPresets(row)"
+                >
+                  用预设
+                </button>
+              </template>
+
+              <span v-if="PARAM_SPECS[row.name].hint" class="param-hint">
+                {{ PARAM_SPECS[row.name].hint }}
               </span>
-              <input v-else v-model="row.value" :placeholder="PARAM_SPECS[row.name].hint ?? '留空 = 默认'" />
-              <button
-                v-if="hasPresets(row.name)"
-                class="ghost"
-                title="回到预设选项"
-                @click="backToPresets(row)"
-              >
-                用预设
-              </button>
-            </template>
 
-            <span v-if="PARAM_SPECS[row.name].hint" class="param-hint">
-              {{ PARAM_SPECS[row.name].hint }}
-            </span>
-
-            <button class="ghost" title="删除这一行" @click="removeParamRow(row.id)">×</button>
-          </li>
-        </ul>
-        <p v-else class="empty">没有参数——地址将完全使用上面保存的默认样式。</p>
+              <button class="ghost" title="删除这一行" @click="removeParamRow(row.id)">×</button>
+            </li>
+          </ul>
+          <p v-else class="empty">没有参数——地址将完全使用上面保存的默认样式。</p>
+        </template>
       </section>
 
       <!-- ── 面板启停（阶段 9）────────────────────────────────────── -->
@@ -1383,6 +1800,131 @@ async function copyAll(): Promise<void> {
   flex-direction: row;
   align-items: center;
   gap: 6px;
+}
+
+/* ── 风格预设 ─────────────────────────────────────────────────────────── */
+
+.preset-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.preset {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 10px;
+  background: var(--bsr-bg-elevated);
+  color: var(--bsr-fg);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, transform 0.12s ease;
+}
+
+.preset:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgb(255 111 165 / 18%);
+}
+
+.preset.active {
+  border-color: var(--bsr-accent);
+  box-shadow: 0 0 0 2px var(--bsr-accent-soft);
+}
+
+.preset strong {
+  font-size: 13px;
+}
+
+.preset .dim {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+/* 预设小色块：一眼看出这个预设的配色 */
+.preset-chip {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  margin-bottom: 4px;
+}
+
+.preset-chip[data-preset='pink'] {
+  background: linear-gradient(90deg, #ff6fa5, #ffd9e6, #ffffff);
+}
+
+.preset-chip[data-preset='dark'] {
+  background: linear-gradient(90deg, #ff9ec4, #00000073, #333333);
+}
+
+.preset-chip[data-preset='plain'] {
+  background: linear-gradient(90deg, #ff6fa5, transparent 70%), repeating-linear-gradient(45deg, #ffd9e6 0 4px, transparent 4px 8px);
+}
+
+/* ── 颜色控件 ─────────────────────────────────────────────────────────── */
+
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px 16px;
+  margin-top: 10px;
+}
+
+.color-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--bsr-muted);
+}
+
+.color-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.color-item .mono {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  color: var(--bsr-fg);
+}
+
+.color-item .dim {
+  font-size: 11px;
+}
+
+/* 清除单项的小按钮 */
+button.mini {
+  padding: 0 5px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--bsr-muted);
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+button.mini:hover {
+  border-color: var(--bsr-danger);
+  color: var(--bsr-danger);
+}
+
+/* 对比度提示 */
+p.warn {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--bsr-warning);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bsr-warning) 14%, transparent);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--bsr-fg);
 }
 
 .fields input,

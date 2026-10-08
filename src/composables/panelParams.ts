@@ -22,13 +22,20 @@ export interface ResolvedPanelStyle {
   theme: 'dark' | 'light'
   /** 是否透明背景（OBS 勾选透明背景时使用）。 */
   transparent: boolean
-  /** 主色（进度条、正在播放标题等强调色）。 */
+  /** 主色（歌曲名、队列高亮、歌词当前行等强调色）。 */
   color: string
-  /** 字体颜色（阶段 9 新增；默认跟随主题）。 */
+  /**
+   * 进度条填充色。**空字符串 = 跟随 [`color`]**。
+   *
+   * 拆出来的原因：早期 `color` 一个变量管 10 处（含进度条），
+   * 用户「只想改进度条颜色」却发现整个面板都变色了。
+   */
+  barColor: string
+  /** 字体颜色（默认跟随主题）。 */
   fg: string | null
-  /** 卡片/列表底色（阶段 9 新增；默认全透明）。 */
+  /** 卡片/列表底色（默认全透明）。 */
   surface: string
-  /** 进度条轨道颜色（阶段 9 新增；默认全透明）。 */
+  /** 进度条轨道颜色（默认全透明）。 */
   track: string
   /** 背景图 URL（阶段 9 新增；默认无）。 */
   bgImage: string | null
@@ -100,7 +107,9 @@ export function resolvePanelPage(
 const DEFAULTS: ResolvedPanelStyle = {
   theme: 'dark',
   transparent: true,
-  color: '#7dd3fc',
+  color: '#ff6fa5',
+  // 空 = 跟随主色
+  barColor: '',
   fg: null,
   // 默认**全透明**：用户要求「只要文字 + 进度条颜色」，
   // 不要那层灰色卡片底。想要卡片感就显式给 surface 一个半透明色。
@@ -158,12 +167,13 @@ export function resolvePanelStyle(
     style.theme = defaults.theme ?? style.theme
     style.transparent = (defaults.bg ?? 'transparent') === 'transparent'
     style.color = defaults.color ?? style.color
+    style.barColor = defaults.bar_color ?? style.barColor
     style.fontSize = defaults.font_size ?? style.fontSize
     style.scale = defaults.scale ?? style.scale
     style.limit = defaults.limit ?? style.limit
     style.showLyrics = defaults.show_lyrics ?? style.showLyrics
     style.layout = defaults.layout ?? style.layout
-    // 阶段 9 新增的三项（老配置里没有，用 `??` 保持向后兼容）
+    // 阶段 9 新增的几项（老配置里没有，用 `??` 保持向后兼容）
     style.surface = defaults.surface ?? style.surface
     style.track = defaults.track ?? style.track
     style.fg = defaults.fg ?? style.fg
@@ -173,7 +183,22 @@ export function resolvePanelStyle(
   style.theme = parseEnum(params.get('theme'), ['dark', 'light'] as const) ?? style.theme
   const bg = parseEnum(params.get('bg'), ['transparent', 'solid'] as const)
   if (bg) style.transparent = bg === 'transparent'
+  // 主色。地址里 `color` 一直是主色，保持这个含义不变（老地址继续有效）。
   style.color = decodeColor(params.get('color')) ?? style.color
+  /*
+   * 进度条色：`barColor` 参数。
+   *
+   * 允许 `follow` / `auto` / 空值显式表示「跟随主色」——这样从界面上
+   * 取消单独设置时能在地址里表达出来，而不是残留一个旧颜色。
+   */
+  const barRaw = params.get('barColor')
+  if (barRaw !== null) {
+    const t = barRaw.trim().toLowerCase()
+    style.barColor =
+      t === '' || t === 'follow' || t === 'auto' || t === 'inherit'
+        ? ''
+        : (decodeColor(barRaw) ?? style.barColor)
+  }
   // 字体颜色：`fg` 参数（也接受 `fontColor` 这个更口语的写法）
   style.fg = decodeColor(params.get('fg') ?? params.get('fontColor')) ?? style.fg
   // 卡片底色 / 进度条轨道：允许 `none` / `transparent` 显式表示透明
@@ -310,12 +335,14 @@ export function extractQuery(source: string): string {
 
 /** 把样式转成内联 CSS 变量，挂在面板根节点上。 */
 export function styleToCssVars(style: ResolvedPanelStyle): Record<string, string> {
-  // 字体颜色：显式给了就用它，否则跟随主题
-  const fg = style.fg ?? (style.theme === 'dark' ? '#f8fafc' : '#0f172a')
+  // 字体颜色：显式给了就用它，否则跟随主题（与桌面端的粉白主题保持一致）
+  const fg = style.fg ?? (style.theme === 'dark' ? '#f8fafc' : '#5a4450')
   // 背景图补成绝对地址：内嵌预览是跨源的，相对路径会 404
   const bgImage = absoluteBackground(style.bgImage, API_BASE)
   return {
     '--panel-color': style.color,
+    // 进度条填充：没单独设就跟随主色（`color` 变量本身不能自引用，所以在这里解析）
+    '--panel-bar': style.barColor || style.color,
     '--panel-font-size': `${style.fontSize}px`,
     '--panel-scale': String(style.scale),
     '--panel-fg': fg,
@@ -329,8 +356,16 @@ export function styleToCssVars(style: ResolvedPanelStyle): Record<string, string
       : style.theme === 'dark'
         ? 'rgba(15, 23, 42, 0.82)'
         : 'rgba(248, 250, 252, 0.86)',
-    '--panel-sub':
-      style.theme === 'dark' ? 'rgba(248, 250, 252, 0.62)' : 'rgba(15, 23, 42, 0.6)',
+    /*
+     * 次要文字色（歌手、点歌人、时间、队列条目、歌词非当前行…）。
+     *
+     * ⚠️ 早期这里**只按主题推导**，完全无视用户设的 `fg`，于是
+     * 「字体色」这个设置实测几乎不生效：把 fg 从 #000000 改成 #ffffff，
+     * 面板上除标题外的文字颜色纹丝不动（实测证据见开发日志）。
+     * 现在用 color-mix 从 `fg` 派生：保留「次要文字更淡」的层次，
+     * 同时让用户的字体色真正作用到所有正文上。
+     */
+    '--panel-sub': `color-mix(in srgb, ${fg} 62%, transparent)`,
   }
 }
 

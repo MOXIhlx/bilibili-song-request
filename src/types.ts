@@ -287,23 +287,38 @@ export interface BlacklistEntry {
 export interface PanelStyleConfig {
   theme: 'dark' | 'light'
   bg: 'transparent' | 'solid'
+  /**
+   * 主色：歌曲名、队列高亮、歌词当前行、弹幕用户名等**强调**文字与装饰。
+   *
+   * 早期它同时控制进度条，导致「只想改进度条颜色，结果整个面板都变了」，
+   * 于是进度条拆到了 `bar_color`。
+   */
   color: string
   /**
-   * 字体颜色（阶段 9）。`null` = 跟随主题。
+   * 进度条填充色。
    *
-   * 与 `color` 的分工：`color` 是**强调色**（进度条、正在播放标题），
-   * `fg` 是**正文颜色**。用户要求「只要文字 + 进度条颜色」，
-   * 这两个就是全部可上色的地方。
+   * **空字符串 = 跟随主色**（默认）。这样只想整体协调时只改 `color` 一处；
+   * 想让进度条单独跳色时再单独设它。
+   */
+  bar_color: string
+  /**
+   * 字体颜色。`null` = 跟随主题。
+   *
+   * 与 `color` 的分工：`color` 是**强调色**（歌曲名、队列高亮等），
+   * `fg` 是**普通正文颜色**（歌手、点歌人、时间、队列条目等）。
+   *
+   * ⚠️ 主题为 `dark` 时应给浅色，为 `light` 时应给深色；
+   * 给反了会让文字与背景融在一起（实测 dark + `#000000` 时正文几乎不可见）。
    */
   fg: string | null
   /**
-   * 卡片/列表底色（阶段 9）。默认 `transparent` = 完全不要底色。
+   * 卡片/列表底色。默认 `transparent` = 完全不要底色。
    *
    * 之前这里是写死的 `color-mix(fg 8%, transparent)`，
    * 于是 OBS 勾了透明背景也仍有一层灰底。
    */
   surface: string
-  /** 进度条轨道颜色（阶段 9）。默认 `transparent`。 */
+  /** 进度条轨道颜色。默认 `transparent`。 */
   track: string
   /**
    * 背景图（阶段 9）。`null` = 无背景图。
