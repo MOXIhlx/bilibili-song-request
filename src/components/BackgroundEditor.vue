@@ -144,12 +144,17 @@ onMounted(async () => {
   sel.keyboard = true
 
   /*
-   * 等图片解码 + 等一帧布局，然后**用像素显式设定**选区。
+   * 等图片解码 + 等布局稳定，然后**用像素显式设定**选区。
    *
-   * ⚠️ 模板里写 `width="80%"` 不够：cropperjs 会把 `sel.width` 原样保留成
-   * 字符串 `"80%"`，而 `$toCanvas()` / `$center()` 需要的是**数字**。
-   * 实测症状：打开编辑器选区只有 80px 高、`输出尺寸` 显示 `0 × 0`。
-   * 所以这里量出 canvas 的实际像素，按 80% 算好再 `$change()`。
+   * ## 为什么不能用百分比、也不能用 getBoundingClientRect
+   *  - 模板写 `width="80%"` 不行：cropperjs 把 `sel.width` 原样保留成字符串
+   *    `"80%"`，而 `$toCanvas()` 需要数字；
+   *  - `getBoundingClientRect()` 量到的是**显示尺寸**（受 canvas 的 CSS 变换
+   *    影响），而 `$change()` 用的是 canvas 的内部坐标。两者在图片被缩放显示
+   *    时并不相等——实测就是「选区固定在 400×300、输出比例全错」。
+   *
+   * 正确做法：用 `<img>` 的**自然像素**（`naturalWidth/Height`）计算，
+   * 这是图片的真实分辨率，也正是裁剪后输出的像素尺寸。
    */
   const waitImage = new Promise<void>((resolve) => {
     if ((img as HTMLImageElement).complete) {
@@ -162,19 +167,34 @@ onMounted(async () => {
   await waitImage
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
 
-  const canvasBox = document.querySelector('.stage cropper-canvas')?.getBoundingClientRect()
-  const imgBox = img.getBoundingClientRect()
-  if (canvasBox?.width && canvasBox?.height) {
-    // 以图片在画布里的可见范围为准，取 80% 并居中
-    const baseW = imgBox.width || canvasBox.width
-    const baseH = imgBox.height || canvasBox.height
-    const w = Math.max(20, Math.round(baseW * 0.8))
-    const h = Math.max(20, Math.round(baseH * 0.8))
-    const x = Math.round((canvasBox.width - w) / 2)
-    const y = Math.round((canvasBox.height - h) / 2)
-    sel.$change(x, y, w, h)
-  } else {
-    sel.$center()
+  /**
+   * 按图片真实像素设定选区，取 80% 并居中。
+   *
+   * 重试几次而不是设一次就算：自定义元素刚插入时 `$change()` 可能还没真正
+   * 生效（内部布局未完成），设置会被随后的默认值覆盖——症状就是"改了但没变"。
+   */
+  // 收窄成局部常量：嵌套函数里 TS 会丢掉对 `sel` 的非空判断
+  const selection = sel
+  function applyInitialSelection(): boolean {
+    const el = img as HTMLImageElement
+    const natW = el.naturalWidth
+    const natH = el.naturalHeight
+    if (!natW || !natH) return false
+    const w = Math.max(20, Math.round(natW * 0.8))
+    const h = Math.max(20, Math.round(natH * 0.8))
+    const x = Math.round((natW - w) / 2)
+    const y = Math.round((natH - h) / 2)
+    selection.$change(x, y, w, h)
+    // 生效的判据：宽高变成了我们给的数字（而不是模板兜底的 0）
+    return (
+      Math.round(Number(selection.width)) === w &&
+      Math.round(Number(selection.height)) === h
+    )
+  }
+
+  for (let attempt = 0; attempt < 12; attempt++) {
+    if (applyInitialSelection()) break
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
   }
   refreshSize()
 })
@@ -348,13 +368,14 @@ const sizeHint = computed(() => {
           <cropper-shade hidden />
           <cropper-handle action="move" plain />
           <!--
-            尺寸在 onMounted 里用**像素**显式设定（见那里的说明）：
-            模板上的 `width="80%"` 会以字符串形式留在 `sel.width` 里，
-            `$toCanvas()` 需要数字。这里给一组兜底值，避免闪一下 0 尺寸。
+            尺寸在 onMounted 里按**图片真实像素**显式设定（见那里的说明）。
+            这里的兜底值故意给成 0：如果像素计算没能生效，用户看到的是
+            "没有选区"而不是一个尺寸完全不对的 400×300——后者更容易被误当成
+            正常状态（实际就踩过这个坑）。
           -->
           <cropper-selection
-            width="400"
-            height="300"
+            width="0"
+            height="0"
             movable
             resizable
             outlined

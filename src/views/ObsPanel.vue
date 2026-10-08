@@ -14,7 +14,7 @@
  * `?style=<id>`。改一套样式，所有引用它的 OBS 浏览器源一起生效——
  * 这是与早期「每个源各自带一串 URL 参数」最大的区别。
  */
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   apiUrl,
@@ -308,6 +308,12 @@ const DEFAULT_PANEL = {
   scale: 1,
   limit: 8,
   show_lyrics: true,
+  title_color: null,
+  font_weight: 600,
+  font_weight_sub: 400,
+  font_weight_title: 700,
+  text_stroke_width: 0,
+  text_stroke_color: null,
   layout: 'list' as const,
 }
 
@@ -419,8 +425,15 @@ const ready = computed(() => draft.value !== null)
 /** 主题对应的默认字体色（`fg` 为空时用它给取色器一个初值）。 */
 const themeFg = computed(() => (draft.value?.theme === 'light' ? '#5a4450' : '#f2f2f2'))
 
-/** 可上色的五项：主色、进度条、字体色、卡片底色、进度条轨道。 */
-type ColorField = 'color' | 'barColor' | 'fg' | 'surface' | 'track'
+/** 可上色的项：歌名、主色、进度条、字体色、卡片底色、进度条轨道、描边色。 */
+type ColorField =
+  | 'color'
+  | 'titleColor'
+  | 'barColor'
+  | 'fg'
+  | 'surface'
+  | 'track'
+  | 'strokeColor'
 
 /**
  * 读一个颜色项当前的值（**直接读样式对象**）。
@@ -439,6 +452,12 @@ function colorValue(field: ColorField): string {
   switch (field) {
     case 'color':
       return cfg.color
+    case 'titleColor':
+      // 空 = 跟随主色；取色器上直接显示主色，符合"看起来会是什么样"
+      return cfg.title_color || cfg.color
+    case 'strokeColor':
+      // 空 = 自动（按字体色算），这里给一个中性深色作为取色器初值
+      return cfg.text_stroke_color || '#000000'
     case 'barColor':
       // 空 = 跟随主色；取色器上直接显示主色，符合"看起来会是什么样"
       return cfg.bar_color || cfg.color
@@ -458,6 +477,10 @@ function isColorSet(field: ColorField): boolean {
   switch (field) {
     case 'color':
       return cfg.color !== DEFAULT_PANEL.color
+    case 'titleColor':
+      return Boolean(cfg.title_color)
+    case 'strokeColor':
+      return Boolean(cfg.text_stroke_color)
     case 'barColor':
       // 空 = 跟随主色，也就是"没单独设过"
       return Boolean(cfg.bar_color)
@@ -477,6 +500,12 @@ function setColor(field: ColorField, value: string): void {
   switch (field) {
     case 'color':
       cfg.color = value
+      break
+    case 'titleColor':
+      cfg.title_color = value
+      break
+    case 'strokeColor':
+      cfg.text_stroke_color = value
       break
     case 'barColor':
       cfg.bar_color = value
@@ -505,6 +534,12 @@ function clearColor(field: ColorField): void {
   switch (field) {
     case 'color':
       cfg.color = DEFAULT_PANEL.color
+      break
+    case 'titleColor':
+      cfg.title_color = null
+      break
+    case 'strokeColor':
+      cfg.text_stroke_color = null
       break
     case 'barColor':
       cfg.bar_color = ''
@@ -643,13 +678,47 @@ function resetAllStyles(): void {
   presetTimer = setTimeout(() => (presetHint.value = ''), 1500)
 }
 
+/**
+ * 可选的 CSS 字重档位。
+ *
+ * 只列 100 的整数倍——CSS 虽然接受任意数值，但字体文件通常只有这几档，
+ * 中间值会被浏览器吸附到最近一档，界面显示与实际渲染就会对不上。
+ */
+const WEIGHTS: Array<{ value: number; label: string }> = [
+  { value: 300, label: '细 300' },
+  { value: 400, label: '常规 400' },
+  { value: 500, label: '中 500' },
+  { value: 600, label: '半粗 600' },
+  { value: 700, label: '粗 700' },
+  { value: 800, label: '特粗 800' },
+  { value: 900, label: '极粗 900' },
+]
+
+/** 恢复默认字重与描边。 */
+function resetTypography(): void {
+  if (!draft.value) return
+  draft.value.font_weight = DEFAULT_PANEL.font_weight
+  draft.value.font_weight_sub = DEFAULT_PANEL.font_weight_sub
+  draft.value.font_weight_title = DEFAULT_PANEL.font_weight_title
+  draft.value.text_stroke_width = DEFAULT_PANEL.text_stroke_width
+  draft.value.text_stroke_color = null
+}
+
+/** 一键设描边宽度（保留当前颜色，没设过就走"自动"）。 */
+function applyStrokePreset(width: number): void {
+  if (!draft.value) return
+  draft.value.text_stroke_width = width
+}
+
 /** 颜色项的界面元数据（顺序即界面顺序：最常调的排前面）。 */
 const COLOR_ITEMS: Array<{ field: ColorField; label: string; hint: string }> = [
-  { field: 'color', label: '主色', hint: '歌曲名、队列高亮、歌词当前行' },
+  { field: 'titleColor', label: '歌名颜色', hint: '留空即跟随主色（只影响歌名）' },
+  { field: 'color', label: '主色', hint: '队列高亮、歌词当前行、弹幕用户名' },
   { field: 'barColor', label: '进度条色', hint: '留空即跟随主色' },
   { field: 'fg', label: '字体色', hint: '歌手、点歌人、时间等正文' },
   { field: 'surface', label: '卡片底色', hint: 'transparent = 不要底色' },
   { field: 'track', label: '进度条轨道', hint: 'transparent = 不要轨道' },
+  { field: 'strokeColor', label: '描边颜色', hint: '留空即按字体色自动选' },
 ]
 
 /**
@@ -1070,12 +1139,149 @@ const previewUrl = computed(() => {
   return (found ?? list[0]).url
 })
 
+/** 桥接页地址：与预览同源，用综合面板即可（它已内置 message 处理）。 */
+const bridgeUrl = computed(() => apiUrl('/panel'))
+
 /** 预览标题（跟随实际预览的面板，而不是用户点过但已关闭的那个）。 */
 const previewLabel = computed(() => {
   const list = pages.value
   if (!list.length) return '（未启用任何面板）'
   const found = list.find((p) => p.key === previewKey.value)
   return (found ?? list[0]).label
+})
+
+// ── 实时预览 ────────────────────────────────────────────────────────────
+
+/**
+ * 预览用的**虚拟画布**尺寸。
+ *
+ * ## 为什么不能直接把 iframe 拉满栏宽
+ * 右栏只有 380px 宽。如果把 iframe 宽度设成 380px，面板就会按 380px 的视口
+ * 排版——文字换行位置、`wide` 布局的左右分栏比例全都和 OBS 里（通常
+ * 1920×1080 的画布）**不一样**，用户看到的就是「预览比例不对」。
+ *
+ * 所以：iframe 按固定虚拟宽度 `960` 渲染（接近半个 1080p 画布，文字量
+ * 与真实使用接近），再用 `transform: scale()` 等比缩放到栏宽显示。
+ * 这样排版与真实一致，视觉上只是"整体缩小"。
+ */
+const PREVIEW_CANVAS_W = 960
+/** 虚拟画布高度：16:9，与 OBS 画布比例一致。 */
+const PREVIEW_CANVAS_H = 540
+
+/** 预览框的实际宽度（由 CSS 决定），用于算缩放比例。 */
+const previewBoxW = ref(0)
+const previewFrameEl = ref<HTMLElement | null>(null)
+
+/** 缩放比例 = 栏宽 / 虚拟宽度。 */
+const previewScale = computed(() => {
+  const w = previewBoxW.value
+  if (!w) return 0.4
+  return w / PREVIEW_CANVAS_W
+})
+
+/** 舞台：按虚拟尺寸渲染，再缩放；外层高度按缩放后的实际高度撑开。 */
+const previewStageStyle = computed(() => ({
+  width: `${PREVIEW_CANVAS_W}px`,
+  height: `${PREVIEW_CANVAS_H}px`,
+  transform: `scale(${previewScale.value})`,
+  transformOrigin: 'top left',
+}))
+
+/** 量预览框宽度（栏宽会随窗口变化）。 */
+let previewRO: ResizeObserver | null = null
+
+onMounted(() => {
+  const el = previewFrameEl.value
+  if (!el) return
+  previewBoxW.value = el.clientWidth
+  previewRO = new ResizeObserver(() => {
+    previewBoxW.value = el.clientWidth
+  })
+  previewRO.observe(el)
+})
+
+onBeforeUnmount(() => {
+  previewRO?.disconnect()
+})
+
+/** 预览 iframe 的引用（仅用于量宽度）。 */
+const previewFrame = ref<HTMLIFrameElement | null>(null)
+
+/**
+ * 桥接 iframe 的引用。
+ *
+ * 它开在 `127.0.0.1:17777`（与预览同源），职责只有一个：
+ * 收到设置页的 `postMessage` 后把样式写进 localStorage，
+ * 借 `storage` 事件广播给主预览——因为设置页与预览跨源，直连不通。
+ */
+const bridgeFrame = ref<HTMLIFrameElement | null>(null)
+
+/**
+ * 预览 iframe 是否已经加载完。
+ *
+ * 加载完成前 `postMessage` 会发给一个还没挂上监听器的文档，
+ * 消息直接丢掉，于是"改颜色没反应"——所以没就绪时先不发，
+ * 等 `@load` 触发后补发一次。
+ */
+const previewReady = ref(false)
+
+/**
+ * 把当前草稿推给预览。
+ *
+ * ## 为什么绕这么一圈（桥接 iframe + localStorage）
+ * 预览 iframe 与设置页**不同源**（`127.0.0.1:17777` vs `tauri.localhost`），
+ * 被 WebView2 站点隔离到不同进程，实测 `postMessage` **双向都不通**
+ * （`contentDocument` 为 null、父子互相收不到消息）。
+ *
+ * 于是改成：
+ *  1. 设置页向**桥接 iframe**（也开在 17777，与预览同源）发 postMessage；
+ *  2. 桥接页把样式写进 `localStorage`；
+ *  3. 同源页面会自动收到 `storage` 事件 → 主预览立即应用。
+ *
+ * 实测这是当前架构下唯一能通的路。桥接页复用了 `/panel`（它已内置
+ * 对 `bsr:preview-style` 的处理），不需要新页面。
+ */
+function pushPreviewStyle(): void {
+  const bridge = bridgeFrame.value
+  const cfg = draft.value
+  if (!bridge?.contentWindow || !cfg) return
+  bridge.contentWindow.postMessage(
+    { type: 'bsr:preview-style', style: clonePlain(cfg) },
+    '*',
+  )
+}
+
+
+/**
+ * 桥接页报到 → 说明它已经挂上监听器，可以把当前草稿推过去了。
+ *
+ * 不用 iframe 的 `load` 事件判断就绪：跨源 iframe 的 `load` 在 WebView2 里
+ * 表现不可靠（早期就是因此一条消息都没发出去）。由接收方主动报到更稳。
+ */
+function onBridgeReady(ev: MessageEvent): void {
+  const data = ev.data as { type?: string } | null
+  if (!data) return
+  if (data.type !== 'bsr:preview-hello' && data.type !== 'bsr:preview-ready') return
+  previewReady.value = true
+  pushPreviewStyle()
+}
+
+onMounted(() => window.addEventListener('message', onBridgeReady))
+onBeforeUnmount(() => window.removeEventListener('message', onBridgeReady))
+
+/** iframe 加载完成后标记就绪并补推一次当前草稿（兜底，主路径是下面的握手）。 */
+function onPreviewLoad(): void {
+  previewReady.value = true
+  pushPreviewStyle()
+}
+
+
+// 草稿任何字段变化 → 立刻推给预览（深度监听，颜色/字号/布局都算）
+watch(draft, pushPreviewStyle, { deep: true })
+
+// 切换预览的面板类型时 iframe 会重建，重置就绪状态等它 load
+watch(previewUrl, () => {
+  previewReady.value = false
 })
 
 /** 关闭中的面板被预览时，自动切走。 */
@@ -1269,6 +1475,74 @@ async function copyAll(): Promise<void> {
         <div class="controls">
           <button class="ghost" @click="setColor('fg', themeFg)">字体色用主题推荐值（{{ themeFg }}）</button>
           <button class="ghost" @click="makeAllTransparent()">全部透明（只留文字与进度条）</button>
+        </div>
+      </section>
+
+      <!-- ── 文字：字重 + 描边 ─────────────────────────────────────── -->
+      <section class="card">
+        <div class="card-head">
+          <h3>文字</h3>
+          <div class="controls">
+            <button class="ghost" :disabled="!ready" @click="resetTypography()">恢复默认</button>
+          </div>
+        </div>
+        <p class="dim">
+          面板要叠在任意背景图或直播画面上，浅色字压在浅色区域会糊掉——
+          描边是最省事的可读性保障。宽度 0 就是不描边。
+        </p>
+
+        <h4>字重</h4>
+        <div class="fields">
+          <label>歌名
+            <select v-model.number="draft.font_weight_title" @change="syncStyleParam('fontSize', String(draft.font_size))">
+              <option v-for="w in WEIGHTS" :key="w.value" :value="w.value">{{ w.label }}</option>
+            </select>
+          </label>
+          <label>正文（歌手、队列、歌词）
+            <select v-model.number="draft.font_weight" @change="syncStyleParam('fontSize', String(draft.font_size))">
+              <option v-for="w in WEIGHTS" :key="w.value" :value="w.value">{{ w.label }}</option>
+            </select>
+          </label>
+          <label>小字（点歌人、时间）
+            <select v-model.number="draft.font_weight_sub" @change="syncStyleParam('fontSize', String(draft.font_size))">
+              <option v-for="w in WEIGHTS" :key="w.value" :value="w.value">{{ w.label }}</option>
+            </select>
+          </label>
+        </div>
+
+        <h4>描边</h4>
+        <div class="fields">
+          <label>宽度
+            <input
+              type="number"
+              min="0"
+              max="6"
+              step="0.5"
+              v-model.number="draft.text_stroke_width"
+              @change="syncStyleParam('fontSize', String(draft.font_size))"
+            />
+          </label>
+          <label>颜色
+            <span class="color-row">
+              <input
+                type="color"
+                :value="draft.text_stroke_color ?? '#000000'"
+                @input="setColor('strokeColor', ($event.target as HTMLInputElement).value)"
+              />
+              <span class="mono">{{ draft.text_stroke_color ?? '自动' }}</span>
+              <button
+                v-if="draft.text_stroke_color"
+                class="mini"
+                title="改回自动（按字体色选）"
+                @click="clearColor('strokeColor')"
+              >✕</button>
+            </span>
+          </label>
+        </div>
+        <div class="controls">
+          <button class="ghost" @click="applyStrokePreset(1.5)">细描边 1.5px</button>
+          <button class="ghost" @click="applyStrokePreset(3)">粗描边 3px</button>
+          <button class="ghost" @click="draft.text_stroke_width = 0">不要描边</button>
         </div>
       </section>
 
@@ -1509,8 +1783,33 @@ async function copyAll(): Promise<void> {
                 {{ p.label }}
               </button>
             </div>
-            <div class="preview-frame" :class="{ transparent: draft.bg === 'transparent' }">
-              <iframe :key="`${previewUrl}#${previewNonce}`" :src="previewUrl" title="面板预览" />
+            <!--
+              桥接 iframe：不可见，只用来把草稿写进预览那份 localStorage。
+              它与预览同源（都在 17777），所以 StorageEvent 能广播过去；
+              设置页自己跨源，直接写预览的存储会被拦。
+            -->
+            <iframe
+              ref="bridgeFrame"
+              class="preview-bridge"
+              :src="bridgeUrl"
+              title="预览桥接"
+              aria-hidden="true"
+              tabindex="-1"
+            />
+            <div
+              ref="previewFrameEl"
+              class="preview-frame"
+              :class="{ transparent: draft.bg === 'transparent' }"
+            >
+              <div class="preview-stage" :style="previewStageStyle">
+                <iframe
+                  :key="`${previewUrl}#${previewNonce}`"
+                  ref="previewFrame"
+                  :src="previewUrl"
+                  title="面板预览"
+                  @load="onPreviewLoad"
+                />
+              </div>
             </div>
             <p class="dim preview-hint">
               预览实时跟随左边改动的样式。改颜色时不会整页重载，只推变量。
@@ -1767,9 +2066,18 @@ async function copyAll(): Promise<void> {
   line-height: 1.4;
 }
 
+/*
+ * 双栏区的预览框高度。
+ *
+ * ⚠️ 从固定 `400px` 改成 **16:9 等比**。
+ * 固定高度配栏宽（380px）会得到一个 380×400 的近方形窗口，而 OBS 画布是
+ * 1920×1080——把 16:9 的内容塞进近方形窗口，用户看到的就是「预览比例不对」。
+ * 现在宽度由栏宽决定、高度按 16:9 自动算，比例与 OBS 一致。
+ */
 .preview-frame {
-  /* 需求指定 400px：能看清宽版/列表布局的比例 */
-  height: 400px;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  height: auto;
 }
 
 /*
@@ -2527,13 +2835,25 @@ p.warn {
 /* 预览框：棋盘底纹以便看清「透明背景」是否生效 */
 .preview-frame {
   /*
-   * 高度由双栏区的 `.preview-frame { height: 400px }` 决定（需求指定）。
+   * 高度由双栏区的 `.preview-frame { height: 560px }` 决定（需求指定 400px，
+   * 但改成按 16:9 等比显示后需要更高才能放下缩放过后的画布）。
    * 这里只负责边框与底色，不要再写 height——否则两处会互相覆盖。
    */
   border: 1px solid var(--bsr-border);
   border-radius: 8px;
   overflow: hidden;
   background: #f6e9ef;
+}
+
+/*
+ * 预览舞台：按虚拟画布尺寸（960×540）渲染，再等比缩放到栏宽。
+ *
+ * 舞台本身被 `transform` 缩放，**不参与正常流的高度计算**，
+ * 所以外层 `.preview-frame` 用 `aspect-ratio: 16/9` 自己撑开高度。
+ */
+.preview-stage {
+  /* 缩放后仍在左上角对齐 */
+  will-change: transform;
 }
 
 .preview-frame.transparent {
@@ -2551,7 +2871,23 @@ p.warn {
     -9px 0;
 }
 
-.preview-frame iframe {
+/*
+ * 桥接 iframe：只做消息中转，必须**完全不可见且不参与布局**。
+ * 用 1×1 + opacity 0 而不是 display:none —— 后者会让部分浏览器
+ * 延迟甚至跳过加载，桥接就永远不就绪。
+ */
+.preview-bridge {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.preview-stage iframe {
+  /* 尺寸由 `.preview-stage` 的内联样式给定（虚拟画布），这里不要再写宽高 */
+  display: block;
   width: 100%;
   height: 100%;
   border: 0;

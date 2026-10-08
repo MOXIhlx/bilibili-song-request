@@ -349,6 +349,34 @@ export interface PanelStyleConfig {
   limit: number
   show_lyrics: boolean
   /**
+   * 歌名（正在播放的曲名）单独颜色。`null` = 跟随主色 `color`。
+   *
+   * 拆出来是因为歌名和「队列高亮 / 歌词当前行 / 弹幕用户名」共用主色时，
+   * 想让歌名更跳一点就得整体改主色，其他元素也跟着变。
+   */
+  title_color: string | null
+  /**
+   * 正文字重（歌手、点歌人、时间、队列条目等）。
+   *
+   * 早期全部写死 `600`，细体字族下显得糊、粗体字族下过重。现在按
+   * "正文 / 次级说明 / 歌名" 三档分别可调。
+   */
+  font_weight: number
+  /** 次级说明字重（「点歌人」「队列为空」这类小字）。 */
+  font_weight_sub: number
+  /** 歌名字重。 */
+  font_weight_title: number
+  /**
+   * 文字描边宽度（px）。`0` = 不描边。
+   *
+   * 面板要叠在任意背景图/直播画面上，浅色字压在浅色区域会糊掉；
+   * 描边是最省事的可读性保障。实现用 `-webkit-text-stroke`（WebView2 支持），
+   * 再加一层同色 `text-shadow` 让描边更实。
+   */
+  text_stroke_width: number
+  /** 描边颜色。`null` = 自动（浅色字用深描边、深色字用浅描边）。 */
+  text_stroke_color: string | null
+  /**
    * 面板布局：
    *  - `list`    竖向堆叠（默认）
    *  - `compact` 精简单行

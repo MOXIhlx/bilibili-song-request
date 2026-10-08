@@ -9,11 +9,17 @@
  * 阶段 7 增强：歌词滚动（按播放位置高亮当前行）、入队/换歌动画、
  * 播放中条目高亮、URL 参数热更新。
  */
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getConfig } from '@/api'
 import { useAppStore } from '@/stores/app'
-import { styleToCssVars, usePanelPage, usePanelStyle } from '@/composables/panelParams'
+import {
+  styleToCssVars,
+  styleToResolved,
+  usePanelPage,
+  usePanelStyle,
+} from '@/composables/panelParams'
 import { parseLrc } from '@/composables/lrc'
+import type { PanelStyleConfig } from '@/types'
 
 const store = useAppStore()
 
@@ -51,10 +57,112 @@ onMounted(async () => {
 })
 
 /** 面板样式（内部订阅 URL 变化，改 OBS 地址即时生效）。 */
-const style = usePanelStyle(
+const baseStyle = usePanelStyle(
   () => configStyles.value ?? store.config?.panel_styles,
   () => configDefaultId.value ?? store.config?.default_style_id,
 )
+
+/**
+ * 设置页实时推送过来的**草稿**样式覆盖。
+ *
+ * ## 为什么需要它
+ * 设置页的预览是一个指向本页的 `<iframe>`。以前改颜色必须「保存样式 → 手动
+ * 点刷新」才能看到效果，因为 iframe 里的样式是从**已保存的配置**解析出来的，
+ * 草稿改了它并不知道。用户反馈：「每次我修改一下都不能马上预览，都要点击保存
+ * 再手动刷新，我想要只要一改变右边就直接能看到效果」。
+ *
+ * 现在设置页把草稿通过 `postMessage` 推过来，这里直接覆盖解析结果——
+ * 保存按钮只负责把方案落盘，与"能不能看见"解耦。
+ */
+const previewOverride = ref<PanelStyleConfig | null>(null)
+
+/**
+ * 实时预览的**存储键**。
+ *
+ * ## 为什么放弃 postMessage（实测走不通）
+ * 设置页里的预览是一个 iframe：父页在 `tauri.localhost`、预览在
+ * `127.0.0.1:17777`，**两个源**。WebView2 会把它们放进不同的渲染进程
+ * （站点隔离）。实测结果：
+ * ```
+ * iframe.contentWindow   → 有
+ * iframe.contentDocument → null      ← 跨源隔离
+ * 父 → 子 postMessage     → 无任何回音
+ * 子 → 父 postMessage     → 无任何回音（双向都不通）
+ * ```
+ * 所以 postMessage 方案在这个架构下**根本建立不起来**，不是接线问题。
+ *
+ * ## localStorage 为什么可行
+ * 存储按 **origin** 隔离，同时**同源页面之间会自动广播 `storage` 事件**。
+ * 设置页里主预览与"桥接页"都跑在 `127.0.0.1:17777`，彼此同源；
+ * 桥接页负责把父页给的草稿写进 localStorage，`storage` 事件就广播给了
+ * 包括主预览在内的所有同源页面。
+ */
+const PREVIEW_STYLE_KEY = 'bsr:preview-style'
+
+/** 应用一份草稿样式覆盖（`null` = 恢复用地址里的样式）。 */
+function applyPreviewOverride(next: PanelStyleConfig | null): void {
+  previewOverride.value = next
+}
+
+/**
+ * 监听设置页推来的草稿样式。
+ *
+ * 两条路径都保留：
+ *  1. `postMessage`——万一将来父子同源（例如把窗口也挂到 17777 上），
+ *     这条会立刻工作，不必改代码；
+ *  2. `storage` 事件——**当前架构下真正生效的那条**。
+ */
+function onPreviewMessage(ev: MessageEvent): void {
+  if (ev.origin !== window.location.origin) return
+  const data = ev.data as { type?: string; style?: PanelStyleConfig } | null
+  if (!data || data.type !== 'bsr:preview-style') return
+  applyPreviewOverride(data.style ?? null)
+}
+
+/** 另一个同源页面改了草稿 → `storage` 事件送达本页。 */
+function onPreviewStorage(ev: StorageEvent): void {
+  if (ev.key !== PREVIEW_STYLE_KEY) return
+  if (!ev.newValue) {
+    applyPreviewOverride(null)
+    return
+  }
+  try {
+    applyPreviewOverride(JSON.parse(ev.newValue) as PanelStyleConfig)
+  } catch {
+    // 内容坏了就当没有覆盖，不影响正常显示
+    applyPreviewOverride(null)
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('message', onPreviewMessage)
+  window.addEventListener('storage', onPreviewStorage)
+  // 挂载时先读一次：设置页可能在本页加载完成前就写好了草稿
+  try {
+    const raw = window.localStorage.getItem(PREVIEW_STYLE_KEY)
+    if (raw) applyPreviewOverride(JSON.parse(raw) as PanelStyleConfig)
+  } catch {
+    // 忽略：读不到就用地址里的样式
+  }
+  /*
+   * 主动向父页报到。
+   *
+   * `targetOrigin` 用 `'*'`：本页不知道父页的确切来源（桌面窗口是
+   * `tauri.localhost`，浏览器里可能是别的主机名）。这条消息不含任何数据，
+   * 只是个类型标记，泄露面为零。
+   */
+  window.parent?.postMessage({ type: 'bsr:preview-hello' }, '*')
+})
+onUnmounted(() => {
+  window.removeEventListener('message', onPreviewMessage)
+  window.removeEventListener('storage', onPreviewStorage)
+})
+
+/** 实际生效的样式：草稿覆盖优先，否则用地址里的样式。 */
+const style = computed(() => {
+  const o = previewOverride.value
+  return o ? styleToResolved(o, baseStyle.value.scale) : baseStyle.value
+})
 
 /**
  * 当前专注页（阶段 8）。
@@ -272,6 +380,8 @@ function formatDuration(seconds: number): string {
   --panel-color: #ff6fa5;
   /* 进度条填充色。空 = 跟随主色（由 styleToCssVars 解析后写入） */
   --panel-bar: #ff6fa5;
+  /* 歌名颜色。空 = 跟随主色 */
+  --panel-title: #ff6fa5;
   --panel-fg: #5a4450;
   --panel-sub: rgba(90, 68, 80, 0.62);
   --panel-bg: transparent;
@@ -280,6 +390,20 @@ function formatDuration(seconds: number): string {
   --panel-track: transparent;
   --panel-font-size: 16px;
   --panel-scale: 1;
+  /* 三档字重：正文 / 次级说明 / 歌名 */
+  --panel-fw: 600;
+  --panel-fw-sub: 400;
+  --panel-fw-title: 700;
+  /*
+   * 文字描边。宽度 0 = 不描边（默认），此时这些声明等价于没有。
+   *
+   * 面板会叠在任意背景图/直播画面上，浅色字压在浅色区域会糊掉，
+   * 描边是最省事的可读性保障。
+   * `-webkit-text-stroke` 在 WebView2/Chromium 上可用；`paint-order: stroke fill`
+   * 让描边画在文字**后面**，否则粗描边会把笔画吃掉一半。
+   */
+  --panel-stroke-w: 0px;
+  --panel-stroke: transparent;
   /* 背景图（可选，由 bgImage 参数给出 URL） */
   --panel-bg-image: none;
 
@@ -297,6 +421,40 @@ function formatDuration(seconds: number): string {
   background-repeat: no-repeat;
   transform-origin: top left;
   zoom: var(--panel-scale);
+}
+
+/*
+ * 字重与描边：**统一在根节点上给默认值**。
+ *
+ * 这样面板里所有文字都自动带上这两项，不必在十几个选择器里各写一遍；
+ * 需要区分的（歌名、次级小字）在下面单独覆盖即可。
+ *
+ * `paint-order: stroke fill` 很关键：默认描边是画在**填充之后**，
+ * 粗描边会把笔画吃掉一半，字看起来又细又脏；改成先描边后填充就正常了。
+ */
+.obs-panel,
+.obs-panel * {
+  font-weight: var(--panel-fw);
+  -webkit-text-stroke: var(--panel-stroke-w) var(--panel-stroke);
+  paint-order: stroke fill;
+}
+
+/* 歌名：单独的颜色与字重 */
+.obs-panel .np-title,
+.obs-panel .qi-title {
+  font-weight: var(--panel-fw-title);
+}
+
+/* 次级说明（「点歌人」「队列为空」「正在播放」标签、时间等）用细一档 */
+.obs-panel .np-label,
+.obs-panel .np-artist,
+.obs-panel .np-by,
+.obs-panel .np-time,
+.obs-panel .queue-empty,
+.obs-panel .np-lyric,
+.obs-panel .dm-user,
+.obs-panel .dm-text {
+  font-weight: var(--panel-fw-sub);
 }
 
 /*
@@ -341,8 +499,8 @@ function formatDuration(seconds: number): string {
 .np-title {
   margin-top: 4px;
   font-size: 1.35em;
-  font-weight: 700;
-  color: var(--panel-color);
+  /* 歌名有独立的颜色变量：`--panel-title` 没单独设时由 JS 解析成主色 */
+  color: var(--panel-title, var(--panel-color));
 }
 
 .np-artist {
@@ -431,11 +589,11 @@ function formatDuration(seconds: number): string {
   opacity: 0.45;
 }
 
-/* 正在唱的那一行：放大 + 主色 + 微微发光 */
+/* 正在唱的那一行：放大 + 主色 + 微微发光（字重跟歌名同档） */
 .lyric-line.active {
   color: var(--panel-color);
   font-size: 1.08em;
-  font-weight: 700;
+  font-weight: var(--panel-fw-title);
   opacity: 1;
   transform: scale(1);
   text-shadow: 0 1px 6px color-mix(in srgb, var(--panel-color) 45%, transparent);
@@ -478,7 +636,7 @@ function formatDuration(seconds: number): string {
 .danmaku-list .dm-user {
   margin-right: 10px;
   color: var(--panel-color);
-  font-weight: 600;
+  font-weight: var(--panel-fw-title);
 }
 
 .danmaku-list .dm-text {
@@ -581,7 +739,7 @@ function formatDuration(seconds: number): string {
 
 .qi-index {
   color: var(--panel-color);
-  font-weight: 700;
+  font-weight: var(--panel-fw-title);
 }
 
 .qi-title {
@@ -812,7 +970,7 @@ function formatDuration(seconds: number): string {
 
   .obs-panel[data-layout='wide'] .queue-item.current .qi-title {
     color: var(--panel-color);
-    font-weight: 700;
+    font-weight: var(--panel-fw-title);
   }
 
   .obs-panel[data-layout='wide'] .queue-item.current .qi-index {

@@ -257,6 +257,27 @@ pub struct PanelStyleConfig {
     pub scale: f64,
     pub limit: usize,
     pub show_lyrics: bool,
+    /// 歌名单独颜色；`None` = 跟随 `color`。
+    ///
+    /// 拆出来是因为歌名与「队列高亮 / 歌词当前行 / 弹幕用户名」共用主色时，
+    /// 想让歌名更跳一点就得整体改主色，其它元素跟着一起变。
+    pub title_color: Option<String>,
+    /// 正文字重（歌手、点歌人、时间、队列条目等）。
+    ///
+    /// 早期全部写死 `600`：细体字族下显糊、粗体字族下过重。
+    /// 现在按「正文 / 次级说明 / 歌名」三档分别可调。
+    pub font_weight: u32,
+    /// 次级说明字重（「点歌人」「队列为空」这类小字）。
+    pub font_weight_sub: u32,
+    /// 歌名字重。
+    pub font_weight_title: u32,
+    /// 文字描边宽度（px）；`0` = 不描边。
+    ///
+    /// 面板要叠在任意背景图/直播画面上，浅色字压在浅色区域会糊掉，
+    /// 描边是最省事的可读性保障。
+    pub text_stroke_width: f64,
+    /// 描边颜色；`None` = 自动（浅色字配深描边、深色字配浅描边）。
+    pub text_stroke_color: Option<String>,
     pub layout: String,
 }
 
@@ -280,6 +301,15 @@ impl Default for PanelStyleConfig {
             scale: 1.0,
             limit: 8,
             show_lyrics: true,
+            // 跟随主色：只调一个颜色就整体协调
+            title_color: None,
+            // 早期写死 600；这里保持同样的观感作为默认
+            font_weight: 600,
+            font_weight_sub: 400,
+            font_weight_title: 700,
+            // 默认不描边：不加任何东西时外观与之前完全一致
+            text_stroke_width: 0.0,
+            text_stroke_color: None,
             layout: "list".to_string(),
         }
     }

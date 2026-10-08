@@ -61,6 +61,18 @@ export interface ResolvedPanelStyle {
   scale: number
   limit: number
   showLyrics: boolean
+  /** 歌名单独颜色（`null` = 跟随 `color`）。 */
+  titleColor: string | null
+  /** 正文字重。 */
+  fontWeight: number
+  /** 次级说明字重（「点歌人」「队列为空」这类小字）。 */
+  fontWeightSub: number
+  /** 歌名字重。 */
+  fontWeightTitle: number
+  /** 文字描边宽度（px）；`0` = 不描边。 */
+  textStrokeWidth: number
+  /** 文字描边颜色（`null` = 按字体色自动选）。 */
+  textStrokeColor: string | null
   /**
    * 面板布局。
    *
@@ -137,6 +149,12 @@ export const FALLBACK_STYLE: PanelStyleConfig = {
   scale: 1,
   limit: 8,
   show_lyrics: true,
+  title_color: null,
+  font_weight: 600,
+  font_weight_sub: 400,
+  font_weight_title: 700,
+  text_stroke_width: 0,
+  text_stroke_color: null,
   layout: 'list',
 }
 
@@ -164,8 +182,36 @@ export function styleToResolved(
     scale: scaleOverride ?? style.scale ?? 1,
     limit: style.limit,
     showLyrics: style.show_lyrics,
+    titleColor: style.title_color ?? null,
+    /*
+     * 字重与描边都要给**兜底值**。
+     *
+     * 老配置里没有这些字段（后端 `#[serde(default)]` 会补上默认值，
+     * 但前端也可能从别处拿到不完整的对象——例如 `FALLBACK_STYLE`）。
+     * 不给兜底会让 `font-weight: undefined` 直接失效、文字粗细全乱。
+     */
+    fontWeight: clampWeight(style.font_weight, 600),
+    fontWeightSub: clampWeight(style.font_weight_sub, 400),
+    fontWeightTitle: clampWeight(style.font_weight_title, 700),
+    textStrokeWidth: Number.isFinite(style.text_stroke_width)
+      ? Math.min(Math.max(style.text_stroke_width, 0), 6)
+      : 0,
+    textStrokeColor: style.text_stroke_color ?? null,
     layout,
   }
+}
+
+/**
+ * 把字重限制到 CSS 实际支持的档位。
+ *
+ * 只接受 100 的整数倍且落在 100~900——中间值浏览器会自己取整，
+ * 但显式规范化能让"界面显示的档位"与"实际渲染"完全一致。
+ */
+function clampWeight(raw: number | undefined, fallback: number): number {
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return fallback
+  const stepped = Math.round(n / 100) * 100
+  return Math.min(Math.max(stepped, 100), 900)
 }
 
 function parseNumber(raw: string | null, min: number, max: number): number | null {
@@ -232,13 +278,35 @@ export function styleToCssVars(style: ResolvedPanelStyle): Record<string, string
   const fg = style.fg ?? (style.theme === 'dark' ? '#f8fafc' : '#5a4450')
   // 背景图补成绝对地址：内嵌预览是跨源的，相对路径会 404
   const bgImage = absoluteBackground(style.bgImage, API_BASE)
+
+  /*
+   * 描边颜色：显式给了就用它，否则**按字体色自动选**——
+   * 浅色字配深描边、深色字配浅描边。这样用户只调宽度就能得到可读的效果，
+   * 不必自己去想描边该用什么颜色。
+   */
+  const stroke = style.textStrokeColor ?? (isLight(fg) ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.65)')
+  const strokeW = Math.max(0, style.textStrokeWidth)
+
   return {
     '--panel-color': style.color,
     // 进度条填充：没单独设就跟随主色（`color` 变量本身不能自引用，所以在这里解析）
     '--panel-bar': style.barColor || style.color,
+    // 歌名颜色：没单独设就跟随主色
+    '--panel-title': style.titleColor || style.color,
     '--panel-font-size': `${style.fontSize}px`,
     '--panel-scale': String(style.scale),
     '--panel-fg': fg,
+    // 三档字重：正文 / 次级说明 / 歌名
+    '--panel-fw': String(style.fontWeight),
+    '--panel-fw-sub': String(style.fontWeightSub),
+    '--panel-fw-title': String(style.fontWeightTitle),
+    /*
+     * 文字描边。宽度为 0 时给 `0` 而不是省略变量——面板 CSS 里用
+     * `-webkit-text-stroke: var(--panel-stroke-w) var(--panel-stroke)`
+     * 统一书写，宽度 0 就等于不描边，省掉一堆分支。
+     */
+    '--panel-stroke-w': `${strokeW}px`,
+    '--panel-stroke': stroke,
     // 卡片底色 / 进度条轨道：默认 transparent（只要文字与进度条）
     '--panel-surface': style.surface,
     '--panel-track': style.track,
@@ -260,6 +328,24 @@ export function styleToCssVars(style: ResolvedPanelStyle): Record<string, string
      */
     '--panel-sub': `color-mix(in srgb, ${fg} 62%, transparent)`,
   }
+}
+
+/**
+ * 判断一个颜色是否偏亮。
+ *
+ * 只处理十六进制（面板里用户能输入的颜色都是取色器给的 `#rrggbb`）；
+ * 其它形式（`rgba(...)`、颜色关键字）一律当作"深色"处理——宁可给浅描边，
+ * 也不要给一个和背景同色的描边导致完全看不见。
+ */
+function isLight(color: string): boolean {
+  const m = /^#?([0-9a-f]{6})$/i.exec(color.trim())
+  if (!m) return false
+  const n = parseInt(m[1], 16)
+  const r = (n >> 16) & 0xff
+  const g = (n >> 8) & 0xff
+  const b = n & 0xff
+  // 感知亮度（Rec. 601），阈值取 0.6 偏向"浅色字"判定，符合深色面板更常见的场景
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.6
 }
 
 /** 从 `?a=1` 或 `#/panel?a=1` 里取出查询串（不含 `?`）。 */
