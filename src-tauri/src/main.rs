@@ -70,9 +70,11 @@ fn main() {
         Ok(handles) => {
             info!("面板地址：{}", handles.panel_url());
             info!("控制台地址：{}", handles.dashboard_url());
+            // 地址带默认样式 id：外观由命名样式决定（在 设置 → OBS 面板 里管理）
             info!(
-                "OBS 浏览器源示例：{}?bg=transparent&theme=dark&limit=8",
-                handles.panel_url()
+                "OBS 浏览器源示例：{}?style={}",
+                handles.panel_url(),
+                config.default_style_id
             );
             handles
         }

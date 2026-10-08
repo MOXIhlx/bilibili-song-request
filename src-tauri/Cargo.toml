@@ -1,6 +1,6 @@
 [package]
 name = "bilibili-song-request"
-version = "1.0.5"
+version = "1.1.0"
 description = "本地弹幕点歌机：B站直播弹幕点歌 + mpv 播放 + OBS 浏览器源面板"
 authors = ["bilibili-song-request"]
 edition = "2021"

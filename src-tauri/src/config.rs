@@ -220,10 +220,19 @@ impl Default for PlayerConfig {
     }
 }
 
-/// 面板默认样式，可被 `/panel?...` 的 URL 参数覆盖。
+/// 一套具名的面板样式。
+///
+/// 地址里用 `?style=<id>` 引用；`name` 只用于界面显示（中文名）。
+///
+/// 反序列化时 `id`/`name` 缺失（老配置或手写 JSON）会回落到默认值，
+/// 由 [`Config::normalize_styles`] 补齐，保证列表里每项都可用。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PanelStyleConfig {
+    /// 样式标识（短 ASCII，出现在 URL 里）。空 = 待补齐。
+    pub id: String,
+    /// 界面显示名（中文）。空 = 用 id 代替。
+    pub name: String,
     pub theme: String,
     pub bg: String,
     /// 主色：歌曲名、队列高亮、歌词当前行、弹幕用户名等**强调**文字与装饰。
@@ -240,6 +249,9 @@ pub struct PanelStyleConfig {
     /// 进度条轨道颜色；默认 `transparent`（阶段 9）。
     pub track: String,
     /// 背景图 URL；只允许 `http(s)://` 或站内路径 `/bg/xxx`（阶段 9）。
+    ///
+    /// 图片的裁剪/旋转/镜像在编辑时**烘焙进新图片文件**，所以这里只存路径，
+    /// 不存变换参数——避免「样式里存了变换、但图片被换掉」导致的对不上。
     pub bg_image: Option<String>,
     pub font_size: u32,
     pub scale: f64,
@@ -251,7 +263,10 @@ pub struct PanelStyleConfig {
 impl Default for PanelStyleConfig {
     fn default() -> Self {
         Self {
-            theme: "dark".to_string(),
+            // 默认样式固定用 `pink`，与 `Config::default_style_id` 对应
+            id: "pink".to_string(),
+            name: "粉白".to_string(),
+            theme: "light".to_string(),
             bg: "transparent".to_string(),
             color: "#ff6fa5".to_string(),
             // 空 = 跟随主色：OBS 里只调一个颜色就能整体协调
@@ -270,6 +285,17 @@ impl Default for PanelStyleConfig {
     }
 }
 
+impl PanelStyleConfig {
+    /// 造一套具名样式（`id` 由调用方保证唯一）。
+    pub fn named(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            ..Self::default()
+        }
+    }
+}
+
 /// 应用总体配置。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -277,7 +303,18 @@ pub struct Config {
     pub server: ServerConfig,
     pub bilibili: BilibiliConfig,
     pub rules: RequestRules,
-    pub panel: PanelStyleConfig,
+    /// 面板样式列表（命名样式）。
+    ///
+    /// ## 为什么从「单个 panel 对象」改成数组
+    /// 早期只有一套全局默认样式，于是「歌词页一套配色、队列页另一套」只能靠
+    /// URL 参数逐个覆盖——地址长到 100+ 字符，而且改一次配色要在每个 OBS
+    /// 浏览器源里重新复制一遍地址。改成命名样式后，地址只写 `?style=<id>`，
+    /// 改样式一处生效于所有引用它的源。
+    ///
+    /// 老配置里的 `panel` 字段在 [`Self::migrate_legacy_panel`] 中迁移过来。
+    pub panel_styles: Vec<PanelStyleConfig>,
+    /// 默认样式 id。为空或指向不存在的 id 时回落到列表第一项。
+    pub default_style_id: String,
     pub player: PlayerConfig,
     /// 点歌黑名单：命中的歌**弹幕直接点不了**，主播可无视。
     #[serde(default)]
@@ -290,7 +327,17 @@ pub struct Config {
     /// 才被顺带写入。放进 config 后，改模式就等于改配置，走同一套落盘路径。
     #[serde(default)]
     pub play_mode: crate::models::PlayMode,
+    /// 旧版单一样式字段（**只用于读取迁移**，不再写回）。
+    ///
+    /// 反序列化时若存在就转成 `panel_styles` 的第一项；保存时永远序列化为
+    /// `null`，等于自动清理旧字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel: Option<LegacyPanelStyle>,
 }
+
+/// 旧版（v1.0.x）的单一面板样式。字段与 [`PanelStyleConfig`] 完全一致，
+/// 单独一个类型是为了让 `Config::panel` 能被判空并做一次性迁移。
+pub type LegacyPanelStyle = PanelStyleConfig;
 
 impl Config {
     /// 应用配置目录，必要时创建。
@@ -401,11 +448,145 @@ impl Config {
             changed = true;
         }
 
+        // 单一样式 → 命名样式列表
+        if self.migrate_legacy_panel() {
+            changed = true;
+        }
+        // 补齐 id/name、去掉重复 id、修正默认样式指向
+        if self.normalize_styles() {
+            changed = true;
+        }
+
         changed
     }
 
+    /// 把旧版 `panel`（单个样式对象）迁移成 `panel_styles` 的第一项。
+    ///
+    /// 返回是否发生了迁移。迁移后 `panel` 置空，保存时即被清理。
+    fn migrate_legacy_panel(&mut self) -> bool {
+        let Some(legacy) = self.panel.take() else {
+            return false;
+        };
+        // 老配置的样式沿用原来的颜色等设置，只补上 id/name。
+        //
+        // ⚠️ 判断「有没有显式 id」不能只看空串：旧配置的 `panel` 里根本没有
+        // `id` 字段，而 `#[serde(default)]` 会用 `PanelStyleConfig::default()`
+        // 兜底——它的 id 恰好就是出厂默认样式的 `pink`。于是 id 与默认样式
+        // 撞名，`normalize_styles()` 把其中一套改成 `pink-2`，用户升级后
+        // **莫名多出第二套一模一样的样式**（实测踩到过两次，第一次误以为
+        // 是空串问题，改完仍然复现，才发现是 serde 默认值在作怪）。
+        //
+        // 所以「空」或「等于出厂默认值」都视为未指定。
+        let mut style = legacy;
+        let factory = PanelStyleConfig::default();
+        if style.id.trim().is_empty() || style.id == factory.id {
+            style.id = "legacy".to_string();
+        }
+        if style.name.trim().is_empty() || style.name == factory.name {
+            style.name = "原有样式".to_string();
+        }
+        let id = style.id.clone();
+        info!(
+            style_id = %id,
+            "配置已迁移：单一面板样式转为命名样式列表（地址需带 ?style={id}）"
+        );
+        self.panel_styles.insert(0, style);
+        // 老的单一样式在语义上就是「默认样式」，除非用户已经指定过别的
+        if self.default_style_id.trim().is_empty() || self.style_by_id(&self.default_style_id).is_none() {
+            self.default_style_id = id;
+        }
+        true
+    }
+
+    /// 规范化样式列表：保证非空、id/name 有值且唯一、默认指向存在。
+    ///
+    /// 对**手写或外部修改过的 config.json** 也要成立，所以这里不假设任何前提。
+    pub fn normalize_styles(&mut self) -> bool {
+        let mut changed = false;
+
+        // 列表为空：补一套出厂默认样式
+        if self.panel_styles.is_empty() {
+            self.panel_styles.push(PanelStyleConfig::default());
+            changed = true;
+        }
+
+        // id / name 补齐 + 去重
+        let mut seen: Vec<String> = Vec::new();
+        let mut next_suffix = 2;
+        for style in &mut self.panel_styles {
+            if style.id.trim().is_empty() {
+                // 用 name 转拼音不现实，直接用序号构造稳定 id
+                let candidate = format!("style{next_suffix}");
+                next_suffix += 1;
+                style.id = candidate;
+                changed = true;
+            }
+            if style.name.trim().is_empty() {
+                style.name = style.id.clone();
+                changed = true;
+            }
+            if seen.contains(&style.id) {
+                // 重复 id：加后缀直到唯一
+                let base = style.id.clone();
+                let mut n = 2;
+                let mut candidate = format!("{base}-{n}");
+                while seen.contains(&candidate) {
+                    n += 1;
+                    candidate = format!("{base}-{n}");
+                }
+                style.id = candidate;
+                changed = true;
+            }
+            seen.push(style.id.clone());
+        }
+
+        // 默认样式指向必须存在
+        if !seen.iter().any(|id| *id == self.default_style_id) {
+            self.default_style_id = seen.first().cloned().unwrap_or_default();
+            changed = true;
+        }
+
+        changed
+    }
+
+    /// 找一套样式；找不到返回 `None`。
+    pub fn style_by_id(&self, id: &str) -> Option<&PanelStyleConfig> {
+        self.panel_styles.iter().find(|s| s.id == id)
+    }
+
+    /// 取默认样式；列表异常为空时返回一份出厂默认值。
+    pub fn default_style(&self) -> PanelStyleConfig {
+        self.style_by_id(&self.default_style_id)
+            .or_else(|| self.panel_styles.first())
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// 生成一个未被占用的样式 id（`style2`、`style3`…）。
+    pub fn next_style_id(&self) -> String {
+        let mut n = 2;
+        loop {
+            let candidate = format!("style{n}");
+            if !self.panel_styles.iter().any(|s| s.id == candidate) {
+                return candidate;
+            }
+            n += 1;
+        }
+    }
+
     /// 从指定路径读取配置。
-    pub fn load_from(path: &Path) -> Result<Self> {        let raw = fs::read_to_string(path).with_context(|| format!("读取 {} 失败", path.display()))?;
+    ///
+    /// ⚠️ 这里**只做反序列化**，不做规范化/迁移。
+    ///
+    /// 早期版本在这里调用了 `normalize_styles()`，结果是：读到一份「只有旧
+    /// `panel` 字段、没有 `panel_styles`」的老配置时，先补出一套出厂 `pink`，
+    /// 随后 `migrate()` 又把旧样式插进去——用户升级后莫名多出第二套样式
+    /// （实测踩到，列表变成 `["legacy", "pink"]`）。
+    ///
+    /// 正确顺序是**先迁移、再规范化**，由 [`Self::load`] 统一负责。
+    /// 直接使用本函数的调用方（含测试）需要自己调 `migrate()`。
+    pub fn load_from(path: &Path) -> Result<Self> {
+        let raw = fs::read_to_string(path).with_context(|| format!("读取 {} 失败", path.display()))?;
         let cfg: Config =
             serde_json::from_str(&raw).with_context(|| format!("解析 {} 失败", path.display()))?;
         Ok(cfg)
@@ -451,17 +632,39 @@ mod tests {
 
     #[test]
     fn migrate_keeps_user_customised_values() {
-        // 用户手工调过的值不能被覆盖
+        // 用户手工调过的值不能被覆盖。
+        //
+        // ⚠️ 先 `normalize_styles()` 再断言：`Config::default()` 的
+        // `panel_styles` 是空数组（serde 的 `Vec` 默认值），首次 `migrate()`
+        // 会补一套出厂样式并因此返回 `true`——那是**首次运行**的正常行为，
+        // 与「规则值是否被覆盖」无关。真实场景里配置总是先经过
+        // `load_from()`（内含规范化），所以这里显式对齐那个前提。
         let mut cfg = Config::default();
+        cfg.normalize_styles();
         cfg.rules.max_queue = 3;
         assert!(!cfg.migrate(), "非旧默认值不应迁移");
         assert_eq!(cfg.rules.max_queue, 3);
 
         // 0 = 不限，同样不该被改
         let mut unlimited = Config::default();
+        unlimited.normalize_styles();
         unlimited.rules.max_queue = 0;
         assert!(!unlimited.migrate());
         assert_eq!(unlimited.rules.max_queue, 0);
+    }
+
+    #[test]
+    fn deserialized_config_fills_styles_without_touching_rules() {
+        // 真实路径：从磁盘读一份**没有 panel_styles 字段**的配置。
+        // 迁移要补齐样式列表，同时一个规则值都不能动。
+        let raw = r##"{ "rules": { "max_queue": 3, "cooldown_secs": 45 } }"##;
+        let mut cfg: Config = serde_json::from_str(raw).unwrap();
+        cfg.migrate();
+        assert_eq!(cfg.panel_styles.len(), 1, "应补一套出厂样式");
+        assert_eq!(cfg.panel_styles[0].id, "pink");
+        assert_eq!(cfg.default_style_id, "pink");
+        assert_eq!(cfg.rules.max_queue, 3);
+        assert_eq!(cfg.rules.cooldown_secs, 45);
     }
 
     #[test]
@@ -472,6 +675,185 @@ mod tests {
         // 再跑一次不应再改动
         assert!(!cfg.migrate());
         assert_eq!(cfg.rules.max_queue, 7);
+    }
+
+    // ── 命名样式的迁移与规范化 ───────────────────────────────────────────
+
+    #[test]
+    fn legacy_panel_becomes_first_style() {
+        // 老配置：只有单个 `panel` 对象，没有 panel_styles
+        let mut cfg = Config::default();
+        cfg.panel_styles.clear();
+        cfg.default_style_id.clear();
+        let mut legacy = PanelStyleConfig::default();
+        legacy.id.clear();
+        legacy.name.clear();
+        legacy.color = "#123456".to_string();
+        cfg.panel = Some(legacy);
+
+        assert!(cfg.migrate(), "应发生迁移");
+        assert_eq!(cfg.panel_styles.len(), 1, "旧样式应成为列表第一项");
+        let style = &cfg.panel_styles[0];
+        assert_eq!(style.id, "legacy");
+        assert_eq!(style.name, "原有样式");
+        assert_eq!(style.color, "#123456", "老的配色设置必须保留");
+        assert_eq!(cfg.default_style_id, "legacy");
+        assert!(cfg.panel.is_none(), "旧字段应被清空，保存时即被清理");
+    }
+
+    #[test]
+    fn legacy_panel_with_empty_id_does_not_collide_with_default() {
+        // 实测踩到的 bug：旧配置的 `panel` 里没有 `id` 字段，`#[serde(default)]`
+        // 用 `PanelStyleConfig::default()` 兜底，而它的 id 正是出厂默认样式的
+        // `pink`——于是 id 撞名，`normalize_styles()` 把其中一套改成 `pink-2`，
+        // 用户升级后**莫名多出第二套一模一样的样式**。
+        //
+        // 这个用例复刻真实老配置：`panel` 里既没有 id 也没有 name。
+        let mut cfg = Config::default();
+        cfg.panel_styles.clear();
+        cfg.default_style_id.clear();
+        let mut legacy = PanelStyleConfig::default();
+        legacy.theme = "dark".into();
+        cfg.panel = Some(legacy);
+
+        cfg.migrate();
+
+        assert_eq!(
+            cfg.panel_styles.len(),
+            1,
+            "迁移后只应有一套样式，实际 {:?}",
+            cfg.panel_styles.iter().map(|s| s.id.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(cfg.panel_styles[0].id, "legacy");
+        assert_eq!(cfg.default_style_id, "legacy");
+        assert_eq!(cfg.panel_styles[0].theme, "dark", "老的配色必须保留");
+    }
+
+    #[test]
+    fn legacy_panel_from_raw_json_migrates_to_single_style() {
+        // 端到端复刻：磁盘上的老配置长这样（panel 无 id/name），
+        // 经 load_from → migrate 之后必须只有一套样式。
+        let raw = r##"{
+            "panel": { "theme": "dark", "color": "#f50000", "limit": 5 }
+        }"##;
+        let mut cfg: Config = serde_json::from_str(raw).unwrap();
+        // 必须先迁移再规范化（load_from 不再自动规范化，见它的文档）
+        cfg.migrate();
+        assert_eq!(
+            cfg.panel_styles.len(),
+            1,
+            "实际 {:?}",
+            cfg.panel_styles.iter().map(|s| s.id.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(cfg.panel_styles[0].id, "legacy");
+        assert_eq!(cfg.panel_styles[0].color, "#f50000");
+        assert_eq!(cfg.panel_styles[0].limit, 5);
+    }
+
+    #[test]
+    fn fresh_config_without_any_panel_fields_gets_factory_style() {
+        // 全新安装：配置里既没有 panel 也没有 panel_styles
+        let mut cfg: Config = serde_json::from_str("{}").unwrap();
+        cfg.migrate();
+        assert_eq!(cfg.panel_styles.len(), 1);
+        assert_eq!(cfg.panel_styles[0].id, "pink", "全新配置应得到出厂样式");
+        assert_eq!(cfg.default_style_id, "pink");
+    }
+
+    #[test]
+    fn migrate_is_idempotent_for_styles() {
+        // 迁移跑两次不能再多出样式（启动时 `migrate()` 可能被调用多次）
+        let mut cfg = Config::default();
+        cfg.panel_styles.clear();
+        cfg.default_style_id.clear();
+        let mut legacy = PanelStyleConfig::default();
+        legacy.id.clear();
+        legacy.name.clear();
+        cfg.panel = Some(legacy);
+
+        cfg.migrate();
+        let after_first = cfg.panel_styles.len();
+        cfg.migrate();
+        assert_eq!(cfg.panel_styles.len(), after_first, "第二次迁移不应再加样式");
+    }
+
+    #[test]
+    fn normalize_fills_empty_style_list() {
+        // 手写/损坏的 config：列表为空 → 补一套出厂默认样式
+        let mut cfg = Config::default();
+        cfg.panel_styles.clear();
+        cfg.default_style_id.clear();
+        assert!(cfg.normalize_styles());
+        assert_eq!(cfg.panel_styles.len(), 1);
+        assert_eq!(cfg.panel_styles[0].id, "pink");
+        assert_eq!(cfg.default_style_id, "pink");
+    }
+
+    #[test]
+    fn normalize_dedupes_ids_and_fills_names() {
+        let mut cfg = Config::default();
+        cfg.panel_styles = vec![
+            PanelStyleConfig { id: "a".into(), name: "".into(), ..Default::default() },
+            PanelStyleConfig { id: "a".into(), name: "第二套".into(), ..Default::default() },
+            PanelStyleConfig { id: "".into(), name: "第三套".into(), ..Default::default() },
+        ];
+        cfg.default_style_id = "nope".to_string();
+        assert!(cfg.normalize_styles());
+
+        let ids: Vec<&str> = cfg.panel_styles.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids.len(), 3);
+        // 全部唯一
+        let mut uniq = ids.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), 3, "id 必须唯一，实际 {ids:?}");
+        // 空名用 id 兜底
+        assert_eq!(cfg.panel_styles[0].name, "a");
+        // 悬空的默认指向被修正到第一项
+        assert_eq!(cfg.default_style_id, ids[0]);
+    }
+
+    #[test]
+    fn normalize_is_idempotent() {
+        let mut cfg = Config::default();
+        cfg.panel_styles.clear();
+        cfg.normalize_styles();
+        assert!(!cfg.normalize_styles(), "第二次不应再有改动");
+    }
+
+    #[test]
+    fn default_style_falls_back_when_id_missing() {
+        let mut cfg = Config::default();
+        cfg.default_style_id = "does-not-exist".to_string();
+        // 即使指向不存在的 id，也要拿到一份可用的样式
+        let style = cfg.default_style();
+        assert_eq!(style.id, "pink");
+    }
+
+    #[test]
+    fn next_style_id_avoids_collisions() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.next_style_id(), "style2");
+        cfg.panel_styles.push(PanelStyleConfig::named("style2", "x"));
+        assert_eq!(cfg.next_style_id(), "style3");
+    }
+
+    #[test]
+    fn legacy_panel_survives_json_roundtrip() {
+        // 直接给一段「老格式」JSON，模拟用户升级后首次启动
+        let raw = r##"{
+            "panel": { "theme": "dark", "color": "#abcdef", "limit": 5 }
+        }"##;
+        let mut cfg: Config = serde_json::from_str(raw).expect("应能解析老配置");
+        assert!(cfg.panel.is_some());
+        cfg.migrate();
+        assert_eq!(cfg.panel_styles.len(), 1);
+        assert_eq!(cfg.panel_styles[0].color, "#abcdef");
+        assert_eq!(cfg.panel_styles[0].limit, 5);
+        // 保存后再读回来，旧字段不该再出现
+        let saved = serde_json::to_string(&cfg).unwrap();
+        assert!(!saved.contains("\"panel\""), "旧字段不应被写回：{saved}");
+        assert!(saved.contains("panel_styles"));
     }
 
     #[test]

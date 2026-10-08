@@ -283,8 +283,21 @@ export interface BlacklistEntry {
   note?: string | null
 }
 
-/** 面板默认样式（可被 URL 参数覆盖）。 */
+/**
+ * 一套**具名**的面板样式。
+ *
+ * 地址里用 `?style=<id>` 引用（`id` 是短 ASCII），`name` 只用于界面显示。
+ *
+ * ## 为什么是数组而不是单个对象
+ * 早期全局只有一套默认样式，于是「歌词页一套配色、队列页另一套」只能靠
+ * URL 参数逐个覆盖，地址长到 100+ 字符，改一次配色还要在每个 OBS 源里
+ * 重新复制地址。命名样式让地址只写 `?style=<id>`，改一处即可全局生效。
+ */
 export interface PanelStyleConfig {
+  /** 样式标识（短 ASCII，出现在 URL 里）。 */
+  id: string
+  /** 界面显示名（中文）。 */
+  name: string
   theme: 'dark' | 'light'
   bg: 'transparent' | 'solid'
   /**
@@ -321,11 +334,14 @@ export interface PanelStyleConfig {
   /** 进度条轨道颜色。默认 `transparent`。 */
   track: string
   /**
-   * 背景图（阶段 9）。`null` = 无背景图。
+   * 背景图。`null` = 无背景图。
    *
    * 只接受 `http(s)://` 或站内路径（如 `/bg/xxx.png`）——
    * OBS 会拦 `file://`，所以本地绝对路径在这里没有意义。
-   * 图片由「OBS 面板」页上传到程序配置目录后经 `/bg/` 提供。
+   * 图片由「设置 → OBS 面板 → 背景图库」上传，经 `/bg/` 提供。
+   *
+   * 图片的裁剪/旋转/镜像在编辑时**烘焙进新图片文件**，所以这里只存路径、
+   * 不存变换参数——避免「样式里存了变换、但图片被换掉」导致对不上。
    */
   bg_image: string | null
   font_size: number
@@ -347,7 +363,10 @@ export interface Config {
   server: ServerConfig
   bilibili: BilibiliConfig
   rules: RequestRules
-  panel: PanelStyleConfig
+  /** 命名面板样式列表（至少一套）。 */
+  panel_styles: PanelStyleConfig[]
+  /** 默认样式 id；指向不存在时面板回落到列表第一项。 */
+  default_style_id: string
   /** 点歌黑名单（阶段 9）。 */
   blacklist: BlacklistEntry[]
 }

@@ -499,6 +499,20 @@ pub fn build_router(ctx: Arc<ServerCtx>) -> Router {
             "/api/panel/background/delete",
             post(api_panel_background_delete),
         )
+        // 背景图编辑结果另存（裁剪/旋转/镜像烘焙后的 PNG）
+        .route(
+            "/api/panel/background/save-edited",
+            post(api_panel_background_save_edited),
+        )
+        // 命名样式的增删改
+        .route(
+            "/api/panel/styles",
+            get(api_panel_styles)
+                .post(api_panel_style_create)
+                .put(api_panel_style_update)
+                .delete(api_panel_style_delete),
+        )
+        .route("/api/panel/default-style", post(api_panel_default_style))
         .route("/bg/{name}", get(bg_file))
         .route(
             "/api/blacklist",
@@ -580,7 +594,8 @@ pub fn build_router(ctx: Arc<ServerCtx>) -> Router {
 /// 根路径：给出可用地址列表，避免主播打开 `http://127.0.0.1:17777/` 看到 404。
 async fn root_page(State(ctx): State<Arc<ServerCtx>>) -> Html<String> {
     let cfg = ctx.config();
-    let panel = format!("{}/panel?bg=transparent&theme=dark", cfg.base_url());
+    // 地址带默认样式 id：现在外观由命名样式决定，不再靠 bg/theme 参数
+    let panel = format!("{}/panel?style={}", cfg.base_url(), cfg.default_style_id);
     let dashboard = format!("{}/dashboard", cfg.base_url());
     Html(templates::error_page(
         "弹幕点歌机本地服务运行中",
@@ -1181,14 +1196,21 @@ async fn api_panel_background_rename(
     std::fs::rename(&from_path, &to_path)
         .map_err(|e| ApiError::internal(format!("重命名失败：{e}")))?;
 
-    // 如果默认样式正引用这张图，同步改掉，否则重启后面板会 404
+    // 引用了这张图的**所有样式**都要同步改掉，否则重启后面板会 404。
+    // （多套命名样式可以各自引用背景图，所以是遍历而不是只查默认样式。）
     let old_url = format!("/bg/{from_name}");
     let new_url = format!("/bg/{to_name}");
     let mut next = ctx.config();
-    if next.panel.bg_image.as_deref() == Some(old_url.as_str()) {
-        next.panel.bg_image = Some(new_url.clone());
+    let mut touched = 0usize;
+    for style in &mut next.panel_styles {
+        if style.bg_image.as_deref() == Some(old_url.as_str()) {
+            style.bg_image = Some(new_url.clone());
+            touched += 1;
+        }
+    }
+    if touched > 0 {
         save_config(ctx.as_ref(), &next)?;
-        info!(from = %from_name, to = %to_name, "背景图已重命名并同步默认样式");
+        info!(from = %from_name, to = %to_name, styles = touched, "背景图已重命名并同步引用它的样式");
     } else {
         info!(from = %from_name, to = %to_name, "背景图已重命名");
     }
@@ -1215,13 +1237,19 @@ async fn api_panel_background_delete(
     }
     std::fs::remove_file(&path).map_err(|e| ApiError::internal(format!("删除失败：{e}")))?;
 
-    // 默认样式若还引用它，清空引用，避免面板指向一个不存在的文件
+    // 引用它的**所有样式**都要清空引用，避免面板指向一个不存在的文件
     let url = format!("/bg/{name}");
     let mut next = ctx.config();
-    if next.panel.bg_image.as_deref() == Some(url.as_str()) {
-        next.panel.bg_image = None;
+    let mut touched = 0usize;
+    for style in &mut next.panel_styles {
+        if style.bg_image.as_deref() == Some(url.as_str()) {
+            style.bg_image = None;
+            touched += 1;
+        }
+    }
+    if touched > 0 {
         save_config(ctx.as_ref(), &next)?;
-        info!(name = %name, "已删除背景图并清空默认引用");
+        info!(name = %name, styles = touched, "已删除背景图并清空引用它的样式");
     } else {
         info!(name = %name, "已删除背景图");
     }
@@ -1327,6 +1355,249 @@ async fn api_panel_background(
     let url = format!("/bg/{name}");
     info!(path = %path.display(), bytes = body.len(), %url, "面板背景图已保存");
     Ok(Json(serde_json::json!({ "url": url })))
+}
+
+/// 把 `encodeURIComponent` 编码过的字符串还原成 UTF-8。
+///
+/// 自己解而不是引依赖：只需要处理 `%XX` 与 `%XX%XX%XX`（UTF-8 多字节），
+/// 非法编码原样保留——文件名只是用来生成可读名字，不值得为它引入 `percent-encoding`。
+fn decode_uri_component(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |b: u8| -> Option<u8> {
+                match b {
+                    b'0'..=b'9' => Some(b - b'0'),
+                    b'a'..=b'f' => Some(b - b'a' + 10),
+                    b'A'..=b'F' => Some(b - b'A' + 10),
+                    _ => None,
+                }
+            };
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `POST /api/panel/background/save-edited` —— 保存裁剪/旋转/镜像后的背景图。
+///
+/// ## 为什么是「另存为新图」而不是覆盖
+/// 前端用 cropperjs 把变换**烘焙**进 canvas 再导出 PNG，这里只负责落盘。
+/// 保留原图的原因：裁剪是不可逆操作，误操作会毁掉素材；另存后原图仍在
+/// 图库里，删掉新图即可回到原状。
+///
+/// 请求头 `X-Base-Name` 给出源文件名（用于派生 `原名-编辑.png`），
+/// 缺省时用随机名。
+async fn api_panel_background_save_edited(
+    State(_ctx): State<Arc<ServerCtx>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    // 编辑结果可能比原图大（放大裁剪 + PNG 无损），上限放宽到 24MB
+    const MAX_BYTES: usize = 24 * 1024 * 1024;
+    if body.is_empty() {
+        return Err(ApiError::bad_request("图片内容为空"));
+    }
+    if body.len() > MAX_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "编辑结果过大（{} 字节，上限 {} 字节）。可以把裁剪区域缩小或降低输出分辨率",
+            body.len(),
+            MAX_BYTES
+        )));
+    }
+
+    // 前端固定导出 PNG：裁剪框可以超出图片，外侧必须是透明，
+    // 用 JPEG 会把透明区变成黑块。
+    let dir = crate::config::Config::config_dir().join("backgrounds");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| ApiError::internal(format!("创建背景图目录失败：{e}")))?;
+
+    // 源文件名（可选）：前端用 `encodeURIComponent` 编码过——HTTP 头只能是
+    // ISO-8859-1，中文文件名直接塞进头会让浏览器拒绝发送。
+    // 这里还原成 UTF-8 字符串，再清洗成安全字符。
+    let base = headers
+        .get("x-base-name")
+        .and_then(|v| v.to_str().ok())
+        .map(decode_uri_component)
+        .and_then(|s| safe_bg_name(&s))
+        .map(|s| s.rsplit_once('.').map(|(a, _)| a).unwrap_or(&s).to_string());
+
+    // 同名已存在时加序号，绝不覆盖
+    let mut name = match &base {
+        Some(stem) => format!("{stem}-编辑.png"),
+        None => format!("bg-{}.png", uuid::Uuid::new_v4()),
+    };
+    let mut n = 2;
+    while dir.join(&name).exists() {
+        name = match &base {
+            Some(stem) => format!("{stem}-编辑{n}.png"),
+            None => format!("bg-{}-{n}.png", uuid::Uuid::new_v4()),
+        };
+        n += 1;
+    }
+
+    let path = dir.join(&name);
+    std::fs::write(&path, &body).map_err(|e| ApiError::internal(format!("写入图片失败：{e}")))?;
+
+    let url = format!("/bg/{name}");
+    info!(path = %path.display(), bytes = body.len(), %url, "背景图编辑结果已另存");
+    Ok(Json(serde_json::json!({ "url": url, "name": name })))
+}
+
+// ──────────────────────────── 命名样式 API ────────────────────────────
+
+/// `GET /api/panel/styles` —— 列出全部样式与默认样式 id。
+async fn api_panel_styles(State(ctx): State<Arc<ServerCtx>>) -> Json<serde_json::Value> {
+    let cfg = ctx.config();
+    Json(serde_json::json!({
+        "styles": cfg.panel_styles,
+        "default_style_id": cfg.default_style_id,
+    }))
+}
+
+/// `POST /api/panel/styles` 请求体：新建样式。
+#[derive(Debug, Deserialize)]
+pub struct StyleCreateRequest {
+    /// 显示名（中文）。
+    pub name: String,
+    /// 可选：从哪套样式复制。缺省则用出厂默认值。
+    #[serde(default)]
+    pub from_id: Option<String>,
+}
+
+/// `POST /api/panel/styles` —— 新建一套样式（可从现有样式复制）。
+async fn api_panel_style_create(
+    State(ctx): State<Arc<ServerCtx>>,
+    Json(body): Json<StyleCreateRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let name = body.name.trim();
+    if name.is_empty() {
+        return Err(ApiError::bad_request("样式名不能为空"));
+    }
+    if name.chars().count() > 24 {
+        return Err(ApiError::bad_request("样式名过长（最多 24 个字符）"));
+    }
+
+    let mut cfg = ctx.config();
+    let id = cfg.next_style_id();
+    let mut style = match body.from_id.as_deref() {
+        Some(from) => cfg
+            .style_by_id(from)
+            .cloned()
+            .ok_or_else(|| ApiError::bad_request(format!("找不到要复制的样式 {from}")))?,
+        None => crate::config::PanelStyleConfig::default(),
+    };
+    style.id = id.clone();
+    style.name = name.to_string();
+    cfg.panel_styles.push(style);
+    save_config(ctx.as_ref(), &cfg)?;
+    info!(style_id = %id, %name, "新建面板样式");
+    Ok(Json(serde_json::json!({ "id": id })))
+}
+
+/// `PUT /api/panel/styles` 请求体：整体替换一套样式。
+#[derive(Debug, Deserialize)]
+pub struct StyleUpdateRequest {
+    /// 要更新的样式（按 `id` 定位）。
+    pub style: crate::config::PanelStyleConfig,
+}
+
+/// `PUT /api/panel/styles` —— 更新一套样式的全部字段。
+///
+/// 用整体替换而不是逐字段 patch：前端本来就持有完整对象，
+/// 整体替换语义更简单，也不会出现"某个字段没传就被清空"的意外。
+async fn api_panel_style_update(
+    State(ctx): State<Arc<ServerCtx>>,
+    Json(body): Json<StyleUpdateRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let mut next_style = body.style;
+    let id = next_style.id.trim().to_string();
+    if id.is_empty() {
+        return Err(ApiError::bad_request("缺少样式 id"));
+    }
+    if next_style.name.trim().is_empty() {
+        return Err(ApiError::bad_request("样式名不能为空"));
+    }
+    if next_style.name.chars().count() > 24 {
+        return Err(ApiError::bad_request("样式名过长（最多 24 个字符）"));
+    }
+    // id 不允许改动：地址里引用的就是它，改了会让 OBS 里的源全部失联
+    next_style.id = id.clone();
+
+    let mut cfg = ctx.config();
+    let Some(slot) = cfg.panel_styles.iter_mut().find(|s| s.id == id) else {
+        return Err(ApiError::not_found(format!("找不到样式 {id}")));
+    };
+    *slot = next_style;
+    save_config(ctx.as_ref(), &cfg)?;
+    info!(style_id = %id, "已更新面板样式");
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// `DELETE /api/panel/styles` 请求体。
+#[derive(Debug, Deserialize)]
+pub struct StyleDeleteRequest {
+    pub id: String,
+}
+
+/// `DELETE /api/panel/styles` —— 删除一套样式。
+///
+/// 若删掉的是默认样式，自动把默认指向列表第一项；列表不许删空
+/// （至少留一套，否则 `/panel` 没有样式可用）。
+async fn api_panel_style_delete(
+    State(ctx): State<Arc<ServerCtx>>,
+    Json(body): Json<StyleDeleteRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let id = body.id.trim();
+    if id.is_empty() {
+        return Err(ApiError::bad_request("缺少样式 id"));
+    }
+    let mut cfg = ctx.config();
+    if cfg.panel_styles.len() <= 1 {
+        return Err(ApiError::bad_request("至少要保留一套样式"));
+    }
+    let before = cfg.panel_styles.len();
+    cfg.panel_styles.retain(|s| s.id != id);
+    if cfg.panel_styles.len() == before {
+        return Err(ApiError::not_found(format!("找不到样式 {id}")));
+    }
+    cfg.normalize_styles();
+    save_config(ctx.as_ref(), &cfg)?;
+    info!(style_id = %id, default = %cfg.default_style_id, "已删除面板样式");
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "default_style_id": cfg.default_style_id,
+    })))
+}
+
+/// `POST /api/panel/default-style` 请求体。
+#[derive(Debug, Deserialize)]
+pub struct DefaultStyleRequest {
+    pub id: String,
+}
+
+/// `POST /api/panel/default-style` —— 设置默认样式。
+async fn api_panel_default_style(
+    State(ctx): State<Arc<ServerCtx>>,
+    Json(body): Json<DefaultStyleRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let id = body.id.trim();
+    let mut cfg = ctx.config();
+    if cfg.style_by_id(id).is_none() {
+        return Err(ApiError::bad_request(format!("找不到样式 {id}")));
+    }
+    cfg.default_style_id = id.to_string();
+    save_config(ctx.as_ref(), &cfg)?;
+    info!(style_id = %id, "默认面板样式已切换");
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// `/bg/{name}` —— 提供背景图。

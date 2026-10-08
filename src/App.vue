@@ -38,8 +38,13 @@ onUnmounted(() => {
         <RouterLink to="/dashboard" :class="{ active: route.path.startsWith('/dashboard') }">
           控制台
         </RouterLink>
-        <RouterLink to="/panels" :class="{ active: route.path.startsWith('/panels') }">
-          OBS 面板
+        <!--
+          「设置」取代了原来的「OBS 面板」一级入口。
+          OBS 面板本质是配置（配一次就不动），不该和控制台并列成导航项——
+          那样导航项多、用户一进来就看到一堆配置。
+        -->
+        <RouterLink to="/settings/obs" :class="{ active: route.path.startsWith('/settings') }">
+          设置
         </RouterLink>
       </nav>
 
@@ -87,10 +92,18 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/*
+ * 外壳高度锁死在视口内，滚动交给 `.app-body`。
+ *
+ * ⚠️ 这里必须用 `height` 而不是 `min-height`，否则 `.app-body` 的
+ * `overflow: auto` 形同虚设：内容会把 main 撑高（实测 2098px），
+ * 实际滚动的是**文档**，于是 `.editor-aside` 的 `position: sticky`
+ * 失效（右栏预览跟着页面滚走，而不是吸附）。
+ */
 .app-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
   background: var(--bsr-bg);
   color: var(--bsr-fg);
 }
@@ -170,8 +183,16 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
+/*
+ * 内容区：**唯一的滚动容器**。
+ *
+ * `min-height: 0` 是必须的——flex 子项默认 `min-height: auto`，不加它
+ * 内容会把本元素撑高（而不是产生滚动），`overflow: auto` 就成了摆设，
+ * 连带 `.editor-aside` 的 sticky 吸附失效。
+ */
 .app-body {
   flex: 1;
+  min-height: 0;
   padding: 20px;
   overflow: auto;
 }

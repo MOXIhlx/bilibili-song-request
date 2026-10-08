@@ -1,24 +1,41 @@
 /**
  * 面板 URL 参数解析。
  *
- * 支持（与需求文档 4.6 一致）：
- *   theme=dark|light
- *   bg=transparent|solid
- *   color=%23ff0000
- *   fontSize=16
- *   scale=1.2
- *   limit=8
- *   showLyrics=true|false
- *   layout=list|compact|lyrics
+ * ## 现在的模型：地址只写「用哪套样式」
  *
- * 未提供的参数回落到后端配置里的默认样式（GET /api/config → panel）。
- * 参数值一律容错：非法值忽略而不报错，保证 OBS 里永远能出画面。
+ * ```
+ * /panel/play?style=pink               ← 常用形态
+ * /panel/lyrics?style=ghost&scale=1.3  ← 只额外覆盖「这个源」的字号倍率
+ * ```
+ *
+ * 外观（主题、颜色、卡片底色、进度条、背景图、字号、条数、布局）全部来自
+ * **命名样式**，由 `GET /api/config` 的 `panel_styles` 提供，地址里只引用 id。
+ *
+ * ## 为什么从「13 个参数」改成这样
+ * 早期每个字段都能写在地址里，于是：
+ *  - 地址长到 100~135 字符，无法阅读；
+ *  - 想整体换配色，得在每个 OBS 浏览器源里重新复制一遍地址；
+ *  - 用户分不清「哪些参数是我特意改的、哪些只是默认值被写出来了」。
+ *
+ * 现在改样式只需在「设置 → OBS 面板」里改一处，所有引用它的源一起变。
+ *
+ * ## `scale` 为什么留在地址里
+ * 它是「这个源的特殊需求」（歌词页放大、队列页不用），而不是「这套配色的
+ * 属性」。把它塞进样式会逼用户为同一套配色存两份样式。
+ *
+ * ## 容错
+ * 未知样式 id、非法倍率一律回落到默认样式，保证 OBS 里**永远能出画面**。
  */
 import { computed, onUnmounted, ref, type ComputedRef, type Ref } from 'vue'
 import { API_BASE } from '@/api'
 import type { PanelStyleConfig } from '@/types'
 
+/** 面板实际生效的样式（命名样式 + 地址里的倍率覆盖）。 */
 export interface ResolvedPanelStyle {
+  /** 生效的样式 id（回落过后的）。 */
+  styleId: string
+  /** 样式显示名（界面提示用）。 */
+  styleName: string
   theme: 'dark' | 'light'
   /** 是否透明背景（OBS 勾选透明背景时使用）。 */
   transparent: boolean
@@ -31,15 +48,16 @@ export interface ResolvedPanelStyle {
    * 用户「只想改进度条颜色」却发现整个面板都变色了。
    */
   barColor: string
-  /** 字体颜色（默认跟随主题）。 */
+  /** 字体颜色（`null` = 跟随主题）。 */
   fg: string | null
   /** 卡片/列表底色（默认全透明）。 */
   surface: string
   /** 进度条轨道颜色（默认全透明）。 */
   track: string
-  /** 背景图 URL（阶段 9 新增；默认无）。 */
+  /** 背景图 URL（默认无）。 */
   bgImage: string | null
   fontSize: number
+  /** 字号倍率（**只来自地址**，每个源可以不同）。 */
   scale: number
   limit: number
   showLyrics: boolean
@@ -49,8 +67,7 @@ export interface ResolvedPanelStyle {
    * - `list`    竖向堆叠（默认，最紧凑）
    * - `compact` 精简单行，隐藏歌手与点歌人
    * - `lyrics`  以歌词为主
-   * - `wide`    宽版（阶段 7 新增）：左侧歌曲/点歌队列，右侧歌词，
-   *             背景保持透明；窄窗口（< 700px）自动堆叠回纵向
+   * - `wide`    宽版：左侧歌曲/点歌队列，右侧歌词
    */
   layout: 'list' | 'compact' | 'lyrics' | 'wide'
 }
@@ -65,7 +82,7 @@ export const PANEL_LAYOUTS = ['list', 'compact', 'lyrics', 'wide'] as const
  * 主播按需组合成多个浏览器源。所有页面共用同一套样式实现，
  * 只是隐藏不需要的区块。
  *
- * - `all`     综合面板（默认，行为与拆分前完全一致）
+ * - `all`     综合面板（默认）
  * - `play`    只显示正在播放 + 进度条 + 点歌队列
  * - `lyrics`  只显示歌词（字号放大）
  * - `danmaku` 只显示最近弹幕（字号放大）
@@ -104,35 +121,51 @@ export function resolvePanelPage(
   return 'all'
 }
 
-const DEFAULTS: ResolvedPanelStyle = {
-  theme: 'dark',
-  transparent: true,
+/** 出厂默认样式（后端 `PanelStyleConfig::default()` 的镜像）。 */
+export const FALLBACK_STYLE: PanelStyleConfig = {
+  id: 'pink',
+  name: '粉白',
+  theme: 'light',
+  bg: 'transparent',
   color: '#ff6fa5',
-  // 空 = 跟随主色
-  barColor: '',
+  bar_color: '',
   fg: null,
-  // 默认**全透明**：用户要求「只要文字 + 进度条颜色」，
-  // 不要那层灰色卡片底。想要卡片感就显式给 surface 一个半透明色。
   surface: 'transparent',
   track: 'transparent',
-  bgImage: null,
-  fontSize: 16,
+  bg_image: null,
+  font_size: 16,
   scale: 1,
   limit: 8,
-  showLyrics: true,
+  show_lyrics: true,
   layout: 'list',
 }
 
-/** 解析 `color=%23ff0000` / `color=red` 之类的值。 */
-export function decodeColor(raw: string | null): string | null {
-  if (!raw) return null
-  const decoded = raw.startsWith('#') ? raw : `#${raw}`
-  // 允许 #rgb / #rrggbb / #rrggbbaa
-  if (/^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(decoded)) return decoded
-  // 允许 CSS 关键字与 rgb()/hsl() 等函数式颜色，做一次宽松校验。
-  if (/^[a-z]+$/i.test(raw)) return raw
-  if (/^(rgb|rgba|hsl|hsla)\(/i.test(raw)) return raw
-  return null
+/** 把一套命名样式转成「生效样式」。 */
+export function styleToResolved(
+  style: PanelStyleConfig,
+  scaleOverride?: number | null,
+): ResolvedPanelStyle {
+  const layout = (PANEL_LAYOUTS as readonly string[]).includes(style.layout)
+    ? (style.layout as ResolvedPanelStyle['layout'])
+    : 'list'
+  return {
+    styleId: style.id,
+    styleName: style.name || style.id,
+    theme: style.theme === 'dark' ? 'dark' : 'light',
+    transparent: (style.bg ?? 'transparent') === 'transparent',
+    color: style.color,
+    barColor: style.bar_color ?? '',
+    fg: style.fg,
+    surface: style.surface,
+    track: style.track,
+    bgImage: style.bg_image,
+    fontSize: style.font_size,
+    // 倍率只来自地址；样式里的 scale 作为「没有地址参数时的默认倍率」
+    scale: scaleOverride ?? style.scale ?? 1,
+    limit: style.limit,
+    showLyrics: style.show_lyrics,
+    layout,
+  }
 }
 
 function parseNumber(raw: string | null, min: number, max: number): number | null {
@@ -142,107 +175,36 @@ function parseNumber(raw: string | null, min: number, max: number): number | nul
   return Math.min(Math.max(n, min), max)
 }
 
-function parseBool(raw: string | null): boolean | null {
-  if (raw === null) return null
-  const v = raw.trim().toLowerCase()
-  if (['1', 'true', 'yes', 'on'].includes(v)) return true
-  if (['0', 'false', 'no', 'off'].includes(v)) return false
-  return null
-}
-
 function parseEnum<T extends string>(raw: string | null, allowed: readonly T[]): T | null {
   if (!raw) return null
   const v = raw.trim().toLowerCase() as T
   return allowed.includes(v) ? v : null
 }
 
-/** 从 URLSearchParams 解析出最终样式。 */
+/**
+ * 从 URLSearchParams 解析出最终样式。
+ *
+ * @param params    地址里的查询参数
+ * @param styles    可用样式列表（来自 `GET /api/config`）
+ * @param fallbackId 默认样式 id（地址没给 `style` 或给的 id 不存在时用它）
+ */
 export function resolvePanelStyle(
   params: URLSearchParams,
-  defaults?: Partial<PanelStyleConfig> | null,
+  styles: PanelStyleConfig[] | null | undefined,
+  fallbackId?: string | null,
 ): ResolvedPanelStyle {
-  const style: ResolvedPanelStyle = { ...DEFAULTS }
+  const list = styles?.length ? styles : [FALLBACK_STYLE]
 
-  if (defaults) {
-    style.theme = defaults.theme ?? style.theme
-    style.transparent = (defaults.bg ?? 'transparent') === 'transparent'
-    style.color = defaults.color ?? style.color
-    style.barColor = defaults.bar_color ?? style.barColor
-    style.fontSize = defaults.font_size ?? style.fontSize
-    style.scale = defaults.scale ?? style.scale
-    style.limit = defaults.limit ?? style.limit
-    style.showLyrics = defaults.show_lyrics ?? style.showLyrics
-    style.layout = defaults.layout ?? style.layout
-    // 阶段 9 新增的几项（老配置里没有，用 `??` 保持向后兼容）
-    style.surface = defaults.surface ?? style.surface
-    style.track = defaults.track ?? style.track
-    style.fg = defaults.fg ?? style.fg
-    style.bgImage = defaults.bg_image ?? style.bgImage
-  }
+  // 地址指定的样式优先；不存在就回落默认 id；默认 id 也不存在就用第一套。
+  const wanted = params.get('style')?.trim()
+  const byWanted = wanted ? list.find((s) => s.id === wanted) : undefined
+  const byDefault = fallbackId ? list.find((s) => s.id === fallbackId) : undefined
+  const style = byWanted ?? byDefault ?? list[0]
 
-  style.theme = parseEnum(params.get('theme'), ['dark', 'light'] as const) ?? style.theme
-  const bg = parseEnum(params.get('bg'), ['transparent', 'solid'] as const)
-  if (bg) style.transparent = bg === 'transparent'
-  // 主色。地址里 `color` 一直是主色，保持这个含义不变（老地址继续有效）。
-  style.color = decodeColor(params.get('color')) ?? style.color
-  /*
-   * 进度条色：`barColor` 参数。
-   *
-   * 允许 `follow` / `auto` / 空值显式表示「跟随主色」——这样从界面上
-   * 取消单独设置时能在地址里表达出来，而不是残留一个旧颜色。
-   */
-  const barRaw = params.get('barColor')
-  if (barRaw !== null) {
-    const t = barRaw.trim().toLowerCase()
-    style.barColor =
-      t === '' || t === 'follow' || t === 'auto' || t === 'inherit'
-        ? ''
-        : (decodeColor(barRaw) ?? style.barColor)
-  }
-  // 字体颜色：`fg` 参数（也接受 `fontColor` 这个更口语的写法）
-  style.fg = decodeColor(params.get('fg') ?? params.get('fontColor')) ?? style.fg
-  // 卡片底色 / 进度条轨道：允许 `none` / `transparent` 显式表示透明
-  style.surface = decodeSurface(params.get('surface')) ?? style.surface
-  style.track = decodeSurface(params.get('track')) ?? style.track
-  // 背景图：只接受 http(s) 与站内相对路径，避免 file:// 之类被 OBS 拦
-  style.bgImage = decodeBgImage(params.get('bgImage')) ?? style.bgImage
-  style.fontSize = parseNumber(params.get('fontSize'), 8, 96) ?? style.fontSize
-  style.scale = parseNumber(params.get('scale'), 0.2, 5) ?? style.scale
-  style.limit = Math.round(parseNumber(params.get('limit'), 0, 100) ?? style.limit)
-  style.showLyrics = parseBool(params.get('showLyrics')) ?? style.showLyrics
-  style.layout = parseEnum(params.get('layout'), PANEL_LAYOUTS) ?? style.layout
+  // 倍率只从地址取；没给就沿用样式自己的 scale
+  const scale = parseNumber(params.get('scale'), 0.2, 5)
 
-  return style
-}
-
-/**
- * 解析「底色类」参数：颜色、或显式的 `none`/`transparent`。
- *
- * 与 [`decodeColor`] 的区别：这里额外允许 `none` / `transparent`
- * 这两种「明确不要底色」的写法，便于在地址里表达
- * 「某个源要卡片底、另一个不要」。
- */
-export function decodeSurface(raw: string | null): string | null {
-  if (!raw) return null
-  const trimmed = raw.trim().toLowerCase()
-  if (trimmed === 'none' || trimmed === 'transparent') return 'transparent'
-  return decodeColor(raw)
-}
-
-/**
- * 解析背景图参数。
- *
- * 只接受 `http(s)://` 或站内相对路径（`/bg/xxx.png`）：
- * OBS 的浏览器源会拦 `file://`，让用户填本地路径只会得到一片空白，
- * 所以这里直接拒绝，避免"看起来配了但没生效"。
- */
-export function decodeBgImage(raw: string | null): string | null {
-  if (!raw) return null
-  const value = raw.trim()
-  if (value === '' || value === 'none') return null
-  if (/^https?:\/\//i.test(value)) return value
-  if (value.startsWith('/')) return value
-  return null
+  return styleToResolved(style, scale)
 }
 
 /**
@@ -262,75 +224,6 @@ export function absoluteBackground(url: string | null, base: string): string | n
   if (/^https?:\/\//i.test(url)) return url
   if (!base) return url
   return `${base.replace(/\/$/, '')}${url.startsWith('/') ? url : `/${url}`}`
-}
-
-/**
- * Vue 组合式函数：从当前 location 解析样式。
- *
- * 内部订阅了 `popstate` / `hashchange`，因此**改了 OBS 浏览器源地址后样式会即时生效**，
- * 不必手动刷新页面。
- */
-export function usePanelStyle(
-  defaults: () => Partial<PanelStyleConfig> | null | undefined,
-): ComputedRef<ResolvedPanelStyle> {
-  const search = usePanelSearch()
-  return computed(() =>
-    resolvePanelStyle(new URLSearchParams(search.value), defaults() ?? null),
-  )
-}
-
-/**
- * 响应式的「当前专注页」。
- *
- * 与 [`usePanelStyle`] 一样订阅 URL 变化，因此 OBS 里改地址后即时生效。
- */
-export function usePanelPage(): ComputedRef<PanelPage> {
-  const page = ref(currentPanelPage())
-  const sync = () => {
-    page.value = currentPanelPage()
-  }
-  window.addEventListener('popstate', sync)
-  window.addEventListener('hashchange', sync)
-  onUnmounted(() => {
-    window.removeEventListener('popstate', sync)
-    window.removeEventListener('hashchange', sync)
-  })
-  return computed(() => page.value)
-}
-
-/** 从当前地址读出专注页。 */
-function currentPanelPage(): PanelPage {
-  return resolvePanelPage(
-    window.location.pathname,
-    window.location.hash,
-    new URLSearchParams(extractQuery(window.location.search + window.location.hash)),
-  )
-}
-
-/**
- * 监听 URL 参数变化（阶段 7）。
- *
- * 返回响应式查询串（不含 `?`）。
- */
-export function usePanelSearch(): Ref<string> {
-  const read = () => extractQuery(window.location.search + window.location.hash)
-  const search = ref(read())
-  const sync = () => {
-    search.value = read()
-  }
-  window.addEventListener('popstate', sync)
-  window.addEventListener('hashchange', sync)
-  onUnmounted(() => {
-    window.removeEventListener('popstate', sync)
-    window.removeEventListener('hashchange', sync)
-  })
-  return search
-}
-
-/** 从 `?a=1` 或 `#/panel?a=1` 里取出查询串（不含 `?`）。 */
-export function extractQuery(source: string): string {
-  const index = source.indexOf('?')
-  return index >= 0 ? source.slice(index + 1) : ''
 }
 
 /** 把样式转成内联 CSS 变量，挂在面板根节点上。 */
@@ -361,12 +254,74 @@ export function styleToCssVars(style: ResolvedPanelStyle): Record<string, string
      *
      * ⚠️ 早期这里**只按主题推导**，完全无视用户设的 `fg`，于是
      * 「字体色」这个设置实测几乎不生效：把 fg 从 #000000 改成 #ffffff，
-     * 面板上除标题外的文字颜色纹丝不动（实测证据见开发日志）。
+     * 面板上除标题外的文字颜色纹丝不动。
      * 现在用 color-mix 从 `fg` 派生：保留「次要文字更淡」的层次，
-     * 同时让用户的字体色真正作用到所有正文上。
+     * 同时让字体色真正作用到所有正文上。
      */
     '--panel-sub': `color-mix(in srgb, ${fg} 62%, transparent)`,
   }
+}
+
+/** 从 `?a=1` 或 `#/panel?a=1` 里取出查询串（不含 `?`）。 */
+export function extractQuery(source: string): string {
+  const index = source.indexOf('?')
+  return index >= 0 ? source.slice(index + 1) : ''
+}
+
+function readSearch(): string {
+  if (typeof window === 'undefined') return ''
+  const fromHash = extractQuery(window.location.hash)
+  return fromHash || extractQuery(window.location.search)
+}
+
+/** 响应式的查询串（订阅 `popstate` / `hashchange`，OBS 改地址即时生效）。 */
+export function usePanelSearch(): Ref<string> {
+  const search = ref(readSearch())
+  if (typeof window !== 'undefined') {
+    const sync = (): void => {
+      search.value = readSearch()
+    }
+    window.addEventListener('popstate', sync)
+    window.addEventListener('hashchange', sync)
+    onUnmounted(() => {
+      window.removeEventListener('popstate', sync)
+      window.removeEventListener('hashchange', sync)
+    })
+  }
+  return search
+}
+
+/**
+ * Vue 组合式函数：从当前 location 解析样式。
+ *
+ * 内部订阅了 `popstate` / `hashchange`，因此**改了 OBS 浏览器源地址后样式会即时生效**，
+ * 不必手动刷新页面。
+ */
+export function usePanelStyle(
+  styles: () => PanelStyleConfig[] | null | undefined,
+  fallbackId: () => string | null | undefined,
+): ComputedRef<ResolvedPanelStyle> {
+  const search = usePanelSearch()
+  return computed(() =>
+    resolvePanelStyle(new URLSearchParams(search.value), styles(), fallbackId()),
+  )
+}
+
+/**
+ * 响应式的「当前专注页」。
+ *
+ * 与 [`usePanelStyle`] 一样订阅 URL 变化，因此 OBS 里改地址后即时生效。
+ */
+export function usePanelPage(): ComputedRef<PanelPage> {
+  const search = usePanelSearch()
+  return computed(() => {
+    if (typeof window === 'undefined') return 'all'
+    return resolvePanelPage(
+      window.location.pathname,
+      window.location.hash,
+      new URLSearchParams(search.value),
+    )
+  })
 }
 
 /**
@@ -381,7 +336,7 @@ export function styleToCssVars(style: ResolvedPanelStyle): Record<string, string
  * ```
  *
  * 后果很隐蔽：调用点通常写在 `try` 里或者被 `?.` 短路，
- * 界面上表现为**永久「正在加载配置…」**（因为 `draft` 始终是 null）。
+ * 界面上表现为**永久「正在加载配置…」**（因为 `draft` 始终为 null）。
  * 这个坑在设置页与 OBS 面板页各踩过一次，所以统一收在这里。
  *
  * 配置本身是纯 JSON 数据（字符串/数字/布尔/数组/对象），

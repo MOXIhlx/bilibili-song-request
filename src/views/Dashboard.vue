@@ -1009,7 +1009,8 @@ watch(tab, (next) => {
 /**
  * 综合面板地址（保留一个快捷预览入口）。
  *
- * 面板的样式参数、四个专注页地址与预览已移到独立的 `Panels.vue`（`/panels`）：
+ * 面板的样式参数、四个专注页地址与预览已移到「设置 → OBS 面板」
+ * （`ObsPanel.vue`，路由 `/settings/obs`）：
  * 那些配置堆在这个标签页里会把弹幕/队列区挤下去。
  * 这里只留一个「快速预览」链接，用配置里的默认样式。
  */
@@ -1020,6 +1021,54 @@ const draft = ref<Config | null>(null)
 const saved = ref(false)
 /** 拉取配置是否失败（用于给出重试入口，而不是永远显示「加载中」）。 */
 const draftError = ref<string | null>(null)
+
+// ── 配置卡片的折叠状态 ──────────────────────────────────────────────────
+
+/**
+ * 哪些卡片被展开。
+ *
+ * ## 为什么需要折叠
+ * 首页原本一屏里有 35 个交互控件，其中「B 站弹幕连接」（5 个输入框）和
+ * 「音乐平台」（登录 + Cookie）都是**配一次就不动**的东西，却常驻在首屏，
+ * 把真正每天看的「正在播放」挤到最右边一小块。用户反馈是
+ * 「一进来就看见一大堆控制台的东西，给人一种很杂乱的感觉」。
+ *
+ * 规则：**已连接 / 已登录就默认收起**（只留一行状态），未配置时默认展开
+ * （因为那时确实需要你填）。手动展开后保持展开，不被状态变化覆盖。
+ */
+const expanded = ref<Record<string, boolean>>({})
+
+/** 用户是否手动切换过这张卡片（切换过就不再按状态自动收起）。 */
+const touched = ref<Record<string, boolean>>({})
+
+/**
+ * 某张卡片当前是否展开。
+ *
+ * @param key        卡片标识
+ * @param autoOpen   按当前状态"应该"展开吗（未配置时为 true）
+ */
+function isExpanded(key: string, autoOpen: boolean): boolean {
+  if (touched.value[key]) return expanded.value[key] === true
+  return autoOpen
+}
+
+/** 手动切换展开状态。 */
+function toggleCard(key: string, autoOpen: boolean): void {
+  const now = isExpanded(key, autoOpen)
+  touched.value[key] = true
+  expanded.value[key] = !now
+}
+
+/** B 站凭据是否已填全（填全就说明配过了）。 */
+const biliConfigured = computed(() => {
+  const c = credentials
+  return Boolean(c.app_id && c.access_key_id && c.access_key_secret && c.code)
+})
+
+/** 是否至少登录了一个音乐平台。 */
+const anyMusicLoggedIn = computed(() =>
+  (store.musicStatus?.platforms ?? []).some((p) => p.logged_in),
+)
 
 function resetDraft(): void {
   // ⚠️ 必须用 clonePlain：store.config 是 Vue 响应式代理，
@@ -1078,181 +1127,36 @@ function formatTime(iso: string): string {
 <template>
   <div class="dashboard">
     <div class="tabs">
-      <button :class="{ active: tab === 'live' }" @click="tab = 'live'">直播与播放</button>
-      <button :class="{ active: tab === 'queue' }" @click="tab = 'queue'">
-        点歌队列 <span class="badge">{{ store.queue.length }}</span>
+      <!--
+        标签按**用途**分组，中间用一条细分隔线分开：
+          左：日常操作（播放 / 队列 / 歌单 / 记录）——每天都会点
+          右：配置（黑名单 / 设置）——配一次就不动
+        这样一眼能看出哪些不用天天管，也是"别把配置和日常操作混在一起"的体现。
+      -->
+      <div class="tab-group">
+        <button :class="{ active: tab === 'live' }" @click="tab = 'live'">直播与播放</button>
+        <button :class="{ active: tab === 'queue' }" @click="tab = 'queue'">
+          点歌队列 <span class="badge">{{ store.queue.length }}</span>
+        </button>
+        <button :class="{ active: tab === 'idle' }" @click="tab = 'idle'">
+          空闲歌单 <span class="badge">{{ idle?.items.length ?? 0 }}</span>
+        </button>
+        <button :class="{ active: tab === 'logs' }" @click="tab = 'logs'">点歌日志</button>
+      </div>
+      <span class="tab-sep" aria-hidden="true" />
+      <div class="tab-group">
+        <button :class="{ active: tab === 'blacklist' }" @click="tab = 'blacklist'">
+          黑名单 <span v-if="blacklist.length" class="badge">{{ blacklist.length }}</span>
+        </button>
+        <button :class="{ active: tab === 'settings' }" @click="tab = 'settings'">设置</button>
+      </div>
+      <button class="ghost refresh-btn" :disabled="store.loading" @click="store.refresh()">
+        刷新状态
       </button>
-      <button :class="{ active: tab === 'idle' }" @click="tab = 'idle'">
-        空闲歌单 <span class="badge">{{ idle?.items.length ?? 0 }}</span>
-      </button>
-      <button :class="{ active: tab === 'logs' }" @click="tab = 'logs'">点歌日志</button>
-      <button :class="{ active: tab === 'blacklist' }" @click="tab = 'blacklist'">
-        黑名单 <span v-if="blacklist.length" class="badge">{{ blacklist.length }}</span>
-      </button>
-      <button :class="{ active: tab === 'settings' }" @click="tab = 'settings'">设置</button>
-      <button class="ghost" :disabled="store.loading" @click="store.refresh()">刷新状态</button>
     </div>
 
     <!-- ── 直播与播放 ───────────────────────────────────────────── -->
     <section v-if="tab === 'live'" class="grid">
-      <article class="card">
-        <h3>B 站弹幕连接</h3>
-        <div class="fields">
-          <label>app_id
-            <input v-model="credentials.app_id" placeholder="项目 ID（纯数字，不是用户名）" />
-          </label>
-          <label>access_key_id <input v-model="credentials.access_key_id" placeholder="访问密钥 ID" /></label>
-          <label class="wide">access_key_secret
-            <input v-model="credentials.access_key_secret" type="password" placeholder="访问密钥 Secret" />
-          </label>
-          <label class="wide">身份码 code
-            <input v-model="credentials.code" placeholder="形如 xxxx-xxxx-xxxx-xxxx" />
-          </label>
-        </div>
-
-        <div class="controls">
-          <button :disabled="store.connecting" @click="connectBilibili()">
-            <span v-if="store.connecting" class="spinner" aria-hidden="true" />
-            {{ connectButtonText }}
-          </button>
-          <button
-            class="ghost"
-            :disabled="store.connecting || !canDisconnect"
-            @click="disconnectBilibili()"
-          >
-            断开
-          </button>
-          <label class="check inline">
-            <input
-              type="checkbox"
-              :checked="store.config?.bilibili.auto_connect ?? false"
-              @change="toggleAutoConnect($event)"
-            />
-            启动时自动连接
-          </label>
-        </div>
-
-        <!-- 连接进度：让用户始终知道「在连 / 连上了 / 失败了」 -->
-        <div class="conn-status" :class="connStatus.tone" role="status" aria-live="polite">
-          <div class="conn-head">
-            <span class="conn-dot" :class="connStatus.tone" />
-            <strong>{{ connStatus.title }}</strong>
-            <span v-if="connStatus.busy" class="spinner" aria-hidden="true" />
-            <span v-if="connStatus.attempts > 1" class="conn-attempts">
-              第 {{ connStatus.attempts }} 次尝试
-            </span>
-          </div>
-          <p class="conn-detail">{{ connStatus.detail }}</p>
-          <p v-if="connStatus.hint" class="conn-hint">{{ connStatus.hint }}</p>
-          <p v-if="connStatus.updatedAt" class="conn-time">最后更新：{{ connStatus.updatedAt }}</p>
-        </div>
-
-        <dl class="kv" style="margin-top: 12px">
-          <dt>状态</dt>
-          <dd :class="bilibiliBadge.tone === 'ok' ? 'ok' : bilibiliBadge.tone === 'busy' ? 'busy' : 'off'">
-            {{ bilibiliBadge.text }}
-          </dd>
-          <dt>直播间</dt>
-          <dd>{{ connRoomId ?? '—' }}</dd>
-          <dt>最近错误</dt>
-          <dd class="err">{{ connLastError ?? '—' }}</dd>
-        </dl>
-
-      </article>
-
-      <article class="card">
-        <h3>音乐平台</h3>
-        <div class="platform-row">
-          <div v-for="platform in (['netease', 'qq'] as MusicPlatform[])" :key="platform" class="platform">
-            <div class="platform-head">
-              <span class="platform-name">{{ platformLabel(platform) }}</span>
-              <span class="platform-badge" :class="platformLoggedIn(platform) ? 'ok' : 'off'">
-                {{ platformLoggedIn(platform) ? '已登录' : '未登录' }}
-              </span>
-            </div>
-            <div class="controls">
-              <button :disabled="!isDesktop()" @click="startMusicLogin(platform)">
-                {{ platformLoggedIn(platform) ? '重新登录' : '打开登录窗口' }}
-              </button>
-              <button
-                class="ghost"
-                :disabled="!platformLoggedIn(platform)"
-                @click="store.clearMusicCookie(platform)"
-              >
-                退出登录
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- 非桌面环境（OBS/浏览器）无法开登录窗口，用这里手动填 Cookie -->
-        <details class="help">
-          <summary>手动粘贴 Cookie</summary>
-          <div class="fields">
-            <label>平台
-              <select v-model="manualCookie.platform">
-                <option value="netease">网易云音乐</option>
-                <option value="qq">QQ 音乐</option>
-              </select>
-            </label>
-            <label class="wide">Cookie
-              <input v-model="manualCookie.value" placeholder="MUSIC_U=...; __csrf=..." />
-            </label>
-          </div>
-          <div class="controls">
-            <button :disabled="!manualCookie.value.trim()" @click="submitManualCookie()">保存 Cookie</button>
-          </div>
-        </details>
-
-        <h4>搜索并加歌</h4>
-        <div class="fields">
-          <label class="wide">关键词
-            <input
-              v-model="store.searchKeyword"
-              placeholder="你还在不在 梁静茹"
-              @keyup.enter="store.searchMusic()"
-            />
-          </label>
-          <label>平台
-            <select v-model="selectedPlatform">
-              <option value="netease">网易云音乐</option>
-              <option value="qq">QQ 音乐</option>
-            </select>
-          </label>
-        </div>
-        <div class="controls">
-          <button :disabled="store.searching" @click="store.searchMusic()">
-            {{ store.searching ? '搜索中…' : '搜索' }}
-          </button>
-          <button class="ghost" :disabled="!store.searchKeyword.trim()" @click="addByText()">
-            直接入队（异步搜索）
-          </button>
-        </div>
-
-        <ul v-if="store.searchResults.length" class="search-list">
-          <li v-for="song in store.searchResults" :key="song.id">
-            <span class="sl-title">{{ song.title }}</span>
-            <span class="sl-artist">{{ song.artist }}</span>
-            <span class="sl-meta">
-              {{ song.album || '' }}<template v-if="formatSongDuration(song.duration)"> · {{ formatSongDuration(song.duration) }}</template>
-            </span>
-            <button
-              class="ghost"
-              title="加入空闲歌单（用已解析的曲目，省一次搜索）"
-              :disabled="idleBusy"
-              @click="addSearchResultToIdle(song)"
-            >
-              → 空闲
-            </button>
-            <button class="sl-add" @click="addSearchResultToQueue(song)">加入队列</button>
-          </li>
-        </ul>
-        <p v-else-if="store.searchKeyword && !store.searching" class="empty">
-          没有结果。若提示未登录，请先登录；若提示接口已变化，说明平台接口调整了。
-        </p>
-
-      </article>
-
       <article class="card">
         <h3>正在播放</h3>
         <div class="now" :class="{ 'now-idle': !store.current }">
@@ -1332,6 +1236,216 @@ function formatTime(iso: string): string {
           />
         </label>
       </article>
+      <article class="card">
+        <!--
+          折叠头：配好之后只留一行状态，四个身份码输入框收起来。
+          这是「一进来一大堆控制台的东西」的主要来源之一——身份码是
+          配一次就不动的，不该常驻首屏。
+        -->
+        <div class="card-head">
+          <h3>B 站弹幕连接</h3>
+          <button
+            class="ghost collapse-toggle"
+            :title="isExpanded('bili', !biliConfigured) ? '收起（已配好就收起来）' : '展开填写身份码'"
+            @click="toggleCard('bili', !biliConfigured)"
+          >
+            {{ isExpanded('bili', !biliConfigured) ? '收起 ▲' : '展开 ▼' }}
+          </button>
+        </div>
+
+        <!-- 折叠时的摘要：一眼看出配没配、连没连 -->
+        <p v-if="!isExpanded('bili', !biliConfigured)" class="collapse-summary">
+          <span class="conn-dot" :class="connStatus.tone" />
+          {{ connStatus.title }}
+          <span class="dim">· 身份码{{ biliConfigured ? '已填写' : '未填写（点「展开」填写）' }}</span>
+        </p>
+
+        <template v-else>
+        <div class="fields">
+          <label>app_id
+            <input v-model="credentials.app_id" placeholder="项目 ID（纯数字，不是用户名）" />
+          </label>
+          <label>access_key_id <input v-model="credentials.access_key_id" placeholder="访问密钥 ID" /></label>
+          <label class="wide">access_key_secret
+            <input v-model="credentials.access_key_secret" type="password" placeholder="访问密钥 Secret" />
+          </label>
+          <label class="wide">身份码 code
+            <input v-model="credentials.code" placeholder="形如 xxxx-xxxx-xxxx-xxxx" />
+          </label>
+        </div>
+
+        <div class="controls">
+          <button :disabled="store.connecting" @click="connectBilibili()">
+            <span v-if="store.connecting" class="spinner" aria-hidden="true" />
+            {{ connectButtonText }}
+          </button>
+          <button
+            class="ghost"
+            :disabled="store.connecting || !canDisconnect"
+            @click="disconnectBilibili()"
+          >
+            断开
+          </button>
+          <label class="check inline">
+            <input
+              type="checkbox"
+              :checked="store.config?.bilibili.auto_connect ?? false"
+              @change="toggleAutoConnect($event)"
+            />
+            启动时自动连接
+          </label>
+        </div>
+
+        <!-- 连接进度：让用户始终知道「在连 / 连上了 / 失败了」 -->
+        <div class="conn-status" :class="connStatus.tone" role="status" aria-live="polite">
+          <div class="conn-head">
+            <span class="conn-dot" :class="connStatus.tone" />
+            <strong>{{ connStatus.title }}</strong>
+            <span v-if="connStatus.busy" class="spinner" aria-hidden="true" />
+            <span v-if="connStatus.attempts > 1" class="conn-attempts">
+              第 {{ connStatus.attempts }} 次尝试
+            </span>
+          </div>
+          <p class="conn-detail">{{ connStatus.detail }}</p>
+          <p v-if="connStatus.hint" class="conn-hint">{{ connStatus.hint }}</p>
+          <p v-if="connStatus.updatedAt" class="conn-time">最后更新：{{ connStatus.updatedAt }}</p>
+        </div>
+
+        <dl class="kv" style="margin-top: 12px">
+          <dt>状态</dt>
+          <dd :class="bilibiliBadge.tone === 'ok' ? 'ok' : bilibiliBadge.tone === 'busy' ? 'busy' : 'off'">
+            {{ bilibiliBadge.text }}
+          </dd>
+          <dt>直播间</dt>
+          <dd>{{ connRoomId ?? '—' }}</dd>
+          <dt>最近错误</dt>
+          <dd class="err">{{ connLastError ?? '—' }}</dd>
+        </dl>
+        </template>
+      </article>
+
+      <article class="card">
+        <div class="card-head">
+          <h3>音乐平台</h3>
+          <button
+            class="ghost collapse-toggle"
+            :title="isExpanded('music', !anyMusicLoggedIn) ? '收起' : '展开登录 / 换号'"
+            @click="toggleCard('music', !anyMusicLoggedIn)"
+          >
+            {{ isExpanded('music', !anyMusicLoggedIn) ? '收起 ▲' : '展开 ▼' }}
+          </button>
+        </div>
+
+        <!-- 已登录时只留一行摘要：两个平台的徽章就够了 -->
+        <p v-if="!isExpanded('music', !anyMusicLoggedIn)" class="collapse-summary">
+          <span
+            v-for="platform in (['netease', 'qq'] as MusicPlatform[])"
+            :key="platform"
+            class="platform-badge"
+            :class="platformLoggedIn(platform) ? 'ok' : 'off'"
+          >
+            {{ platformLabel(platform) }} {{ platformLoggedIn(platform) ? '已登录' : '未登录' }}
+          </span>
+          <span class="dim">· Cookie 存在系统凭据库，换机器要重新登录</span>
+        </p>
+
+        <template v-if="isExpanded('music', !anyMusicLoggedIn)">
+        <div class="platform-row">
+          <div v-for="platform in (['netease', 'qq'] as MusicPlatform[])" :key="platform" class="platform">
+            <div class="platform-head">
+              <span class="platform-name">{{ platformLabel(platform) }}</span>
+              <span class="platform-badge" :class="platformLoggedIn(platform) ? 'ok' : 'off'">
+                {{ platformLoggedIn(platform) ? '已登录' : '未登录' }}
+              </span>
+            </div>
+            <div class="controls">
+              <button :disabled="!isDesktop()" @click="startMusicLogin(platform)">
+                {{ platformLoggedIn(platform) ? '重新登录' : '打开登录窗口' }}
+              </button>
+              <button
+                class="ghost"
+                :disabled="!platformLoggedIn(platform)"
+                @click="store.clearMusicCookie(platform)"
+              >
+                退出登录
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 非桌面环境（OBS/浏览器）无法开登录窗口，用这里手动填 Cookie -->
+        <details class="help">
+          <summary>手动粘贴 Cookie</summary>
+          <div class="fields">
+            <label>平台
+              <select v-model="manualCookie.platform">
+                <option value="netease">网易云音乐</option>
+                <option value="qq">QQ 音乐</option>
+              </select>
+            </label>
+            <label class="wide">Cookie
+              <input v-model="manualCookie.value" placeholder="MUSIC_U=...; __csrf=..." />
+            </label>
+          </div>
+          <div class="controls">
+            <button :disabled="!manualCookie.value.trim()" @click="submitManualCookie()">保存 Cookie</button>
+          </div>
+        </details>
+        </template>
+
+        <!--
+          「搜索并加歌」**不参与折叠**：它是这块卡片里唯一每天都会用的功能，
+          折叠起来只会多点一次。折叠只针对上面的登录状态与 Cookie（配一次就不动）。
+        -->
+        <h4>搜索并加歌</h4>
+        <div class="fields">
+          <label class="wide">关键词
+            <input
+              v-model="store.searchKeyword"
+              placeholder="你还在不在 梁静茹"
+              @keyup.enter="store.searchMusic()"
+            />
+          </label>
+          <label>平台
+            <select v-model="selectedPlatform">
+              <option value="netease">网易云音乐</option>
+              <option value="qq">QQ 音乐</option>
+            </select>
+          </label>
+        </div>
+        <div class="controls">
+          <button :disabled="store.searching" @click="store.searchMusic()">
+            {{ store.searching ? '搜索中…' : '搜索' }}
+          </button>
+          <button class="ghost" :disabled="!store.searchKeyword.trim()" @click="addByText()">
+            直接入队（异步搜索）
+          </button>
+        </div>
+
+        <ul v-if="store.searchResults.length" class="search-list">
+          <li v-for="song in store.searchResults" :key="song.id">
+            <span class="sl-title">{{ song.title }}</span>
+            <span class="sl-artist">{{ song.artist }}</span>
+            <span class="sl-meta">
+              {{ song.album || '' }}<template v-if="formatSongDuration(song.duration)"> · {{ formatSongDuration(song.duration) }}</template>
+            </span>
+            <button
+              class="ghost"
+              title="加入空闲歌单（用已解析的曲目，省一次搜索）"
+              :disabled="idleBusy"
+              @click="addSearchResultToIdle(song)"
+            >
+              → 空闲
+            </button>
+            <button class="sl-add" @click="addSearchResultToQueue(song)">加入队列</button>
+          </li>
+        </ul>
+        <p v-else-if="store.searchKeyword && !store.searching" class="empty">
+          没有结果。若提示未登录，请先登录；若提示接口已变化，说明平台接口调整了。
+        </p>
+
+      </article>
+
 
       <article class="card">
         <h3>最近弹幕</h3>
@@ -1386,28 +1500,9 @@ function formatTime(iso: string): string {
         （用户反馈「在下面看不清顶部的报错提示」，顶部越少干扰越好）。
       -->
 
-      <article class="card">
-        <h3>链路自测（排障用）</h3>
-        <div class="fields">
-          <label class="wide">弹幕文本
-            <input
-              v-model="simulateText"
-              placeholder="点歌 你还在不在 梁静茹"
-              @keyup.enter="store.simulateDanmaku(simulateText)"
-            />
-          </label>
-        </div>
-        <div class="controls">
-          <button @click="store.simulateDanmaku(simulateText)">注入弹幕</button>
-          <button class="ghost" @click="store.simulateDanmaku('点歌 你还在不在', '测试观众')">
-            注入非点歌弹幕
-          </button>
-        </div>
-      </article>
-
-      <!-- 面板配置入口：卡片已移除（内容都在「OBS 面板」页），只留一个链接 -->
+      <!-- 面板配置入口：内容在「设置 → OBS 面板」，这里只留链接 -->
       <p class="panel-entry">
-        <RouterLink class="link" to="/panels">OBS 面板设置 →</RouterLink>
+        <RouterLink class="link" to="/settings/obs">OBS 面板设置 →</RouterLink>
         <a class="link" :href="panelUrl" target="_blank" rel="noreferrer">预览综合面板</a>
       </p>
     </section>
@@ -1540,15 +1635,18 @@ function formatTime(iso: string): string {
       </div>
       <!-- 加歌 -->
       <h4>加歌</h4>
-      <div class="fields">
+      <!--
+        输入框与按钮**同一行**。
+        早期按钮单独放在下面的 `.controls` 里，视觉上像"属于第三个输入框"，
+        而且 `.fields` 只有两个字段时会被拉伸到 538px 宽（`auto-fit` 的坑）。
+      -->
+      <div class="form-row">
         <label>歌名
           <input v-model="idleForm.title" placeholder="例如 晴天" @keyup.enter="submitIdle()" />
         </label>
         <label>歌手（可留空）
           <input v-model="idleForm.artist" placeholder="例如 周杰伦" @keyup.enter="submitIdle()" />
         </label>
-      </div>
-      <div class="controls">
         <button :disabled="!idleForm.title.trim() || idleBusy" @click="submitIdle()">加入空闲歌单</button>
       </div>
       <p v-if="idleError" class="err">{{ idleError }}</p>
@@ -1718,7 +1816,8 @@ function formatTime(iso: string): string {
           <button class="ghost" :disabled="blacklistBusy" @click="refreshBlacklist()">刷新</button>
         </div>
       </div>
-      <div class="fields">
+      <!-- 加黑名单：同样输入框与按钮同一行 -->
+      <div class="form-row">
         <label>歌名
           <input v-model="blacklistForm.title" placeholder="例如 晴天" @keyup.enter="submitBlacklist()" />
         </label>
@@ -1728,8 +1827,6 @@ function formatTime(iso: string): string {
         <label>备注（可选）
           <input v-model="blacklistForm.note" placeholder="为什么拉黑" @keyup.enter="submitBlacklist()" />
         </label>
-      </div>
-      <div class="controls">
         <button :disabled="!blacklistForm.title.trim() || blacklistBusy" @click="submitBlacklist()">
           加入黑名单
         </button>
@@ -1811,9 +1908,29 @@ function formatTime(iso: string): string {
             </select>
           </label>
         </div>
-        <h4>面板默认样式</h4>
+        <h4>链路自测（排障用）</h4>
+        <p class="dim">
+          注入一条弹幕文本，走完整的解析 → 搜索 → 入队链路，用来验证程序本身是否正常。
+          观众的真实弹幕不受影响。
+        </p>
+        <div class="fields">
+          <label class="wide">弹幕文本
+            <input
+              v-model="simulateText"
+              placeholder="点歌 你还在不在 梁静茹"
+              @keyup.enter="store.simulateDanmaku(simulateText)"
+            />
+          </label>
+        </div>
         <div class="controls">
-          <RouterLink class="link" to="/panels">打开 OBS 面板配置 →</RouterLink>
+          <button @click="store.simulateDanmaku(simulateText)">注入弹幕</button>
+          <button class="ghost" @click="store.simulateDanmaku('点歌 你还在不在', '测试观众')">
+            注入非点歌弹幕
+          </button>
+        </div>
+        <h4>面板样式</h4>
+        <div class="controls">
+          <RouterLink class="link" to="/settings/obs">打开「设置 → OBS 面板」→</RouterLink>
         </div>
       </template>
       <!-- 拿不到配置时给出明确原因与重试，绝不无尽「加载中」 -->
@@ -1837,6 +1954,32 @@ function formatTime(iso: string): string {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+/*
+ * 标签分组（日常操作 / 配置）。
+ *
+ * ⚠️ 「刷新状态」原来靠 `.tabs button.ghost { margin-left: auto }` 推到最右，
+ * 但它现在在 `.tab-group` 里，不再直接是 `.tabs` 的子元素——
+ * 所以用 `.refresh-btn` 自己撑开左边距。
+ */
+.tab-group {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* 两组之间的细分隔线：弱化，只表示"这里换了一类" */
+.tab-sep {
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--bsr-border);
+}
+
+.tabs button.refresh-btn {
+  margin-left: auto;
 }
 
 .tabs button,
@@ -1882,8 +2025,49 @@ button.danger {
 
 .grid {
   display: grid;
+  /*
+   * `auto-fit` + `1fr`：窗口够宽时一行三张，窄了自动减列。
+   * 「正在播放」在模板里排在首位（左上角），这是需求明确要求的——
+   * 它是主播盯得最多的一块，早期被挤在最右边只占 1/3 宽。
+   */
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 16px;
+}
+
+/* ── 配置卡片的折叠 ───────────────────────────────────────────────────── */
+
+/*
+ * 折叠开关做得比普通按钮更轻：它是个频繁点但不需要强调的控件，
+ * 用「幽灵按钮」会跟卡片里的主操作抢视觉。
+ */
+.collapse-toggle {
+  padding: 2px 10px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--bsr-muted);
+  font-size: 12px;
+}
+
+.collapse-toggle:hover {
+  border-color: var(--bsr-border);
+  background: var(--bsr-accent-soft);
+  color: var(--bsr-fg);
+}
+
+/* 折叠后的单行摘要：状态一眼可见，占高只有一行 */
+.collapse-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--bsr-fg);
+}
+
+.collapse-summary .dim {
+  font-size: 12px;
+  color: var(--bsr-muted);
 }
 
 .panel-entry {
@@ -2761,9 +2945,23 @@ button.danger {
   gap: 6px;
 }
 
+/*
+ * 表单字段网格。
+ *
+ * ⚠️ 这里必须用 `auto-fill` 而不是 `auto-fit`。
+ *
+ * `auto-fit` 会把**空的轨道合并掉**，再把剩下的轨道拉伸填满容器。后果是
+ * 「字段越少，每个越宽」，同一套样式在不同表单里给出完全不同的宽度——
+ * 实测（容器 1106px、minmax(210px, 1fr)）：
+ *
+ *   只有 2 个字段 → 列定义 `545px 545px 0px 0px`，每个 545px（数字框宽得离谱）
+ *   有 7 个字段   → 列定义 `264.5px ×4`，每个 264px
+ *
+ * `auto-fill` 保留空轨道，列宽因此与字段数量无关，全站一致。
+ */
 .fields {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   gap: 10px 16px;
 }
 
@@ -2793,5 +2991,71 @@ button.danger {
   background: var(--bsr-bg);
   color: var(--bsr-fg);
   font-size: 13px;
+  /*
+   * 上限宽度：数字框不该占满整列。
+   *
+   * `1fr` 列在宽屏下会有 260px 以上，而「冷却（秒）」这类内容只有两三个字符，
+   * 撑满之后既难看又难扫读。文字类输入（正则、地址、歌名）需要长宽度，
+   * 因此只限制 number / 短文本，不给全局 max-width。
+   */
+  max-width: 260px;
+}
+
+/* 短内容字段再收紧：时长、等级、条数这类数字 */
+.fields input[type='number'] {
+  max-width: 130px;
+}
+
+/* 复选框所在的行不参与宽度限制 */
+.fields label.check input {
+  max-width: none;
+}
+
+/*
+ * 行内表单：字段与**提交按钮同一行**。
+ *
+ * 用于「加歌」「加黑名单」这类「填两个字段 → 点一下」的场景。
+ * 早期这些表单的按钮单独放在下面一行，视觉上像属于别的输入框；
+ * 而且用 `.fields` 网格时字段会被拉伸到 500px 以上（`auto-fit` 的坑）。
+ */
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+  margin-top: 10px;
+}
+
+.form-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /*
+   * 不用 `flex: 1`：那会让两个输入框各撑到 480px 以上（实测 484px），
+   * 对「歌名 + 歌手」这种短内容毫无必要。给一个合理的基准宽 + 上限，
+   * 不足一行时自动换行。
+   */
+  flex: 0 1 240px;
+  min-width: 150px;
+  max-width: 320px;
+  font-size: 12px;
+  color: var(--bsr-muted);
+}
+
+.form-row input {
+  padding: 6px 8px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 6px;
+  background: var(--bsr-bg);
+  color: var(--bsr-fg);
+  font-size: 13px;
+  width: 100%;
+  max-width: none;
+}
+
+/* 按钮与输入框底对齐，且不参与拉伸 */
+.form-row > button {
+  flex: none;
+  margin-bottom: 1px;
 }
 </style>

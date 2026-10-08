@@ -18,6 +18,7 @@ import type {
   MusicPlatform,
   MusicSearchResponse,
   MusicStatus,
+  PanelStyleConfig,
   PlayUrlResponse,
   PlatformStatus,
   QueueItem,
@@ -536,6 +537,96 @@ export async function uploadBackground(file: File): Promise<string> {  const res
   const data = (await res.json()) as { url?: string }
   if (!data.url) throw new ApiError('上传成功但后端未返回图片地址')
   return data.url
+}
+
+/**
+ * 保存背景图**编辑结果**（裁剪 / 旋转 / 缩放 / 镜像后烘焙出的 PNG）。
+ *
+ * 与 [`uploadBackground`] 的区别只在两处：
+ *  1. 额外带 `X-Base-Name`，后端据此生成 `原名-编辑.png` 这样的可读文件名；
+ *  2. 后端会**回避重名**（存在就加序号），所以绝不会覆盖原图。
+ *
+ * ⚠️ 一定要用 PNG：裁剪框可以超出图片边界，外侧是透明，
+ * JPEG 会把透明区压成黑块。
+ */
+export async function saveEditedBackground(
+  blob: Blob,
+  baseName: string,
+): Promise<{ url: string; name: string }> {
+  const res = await fetch(apiUrl('/api/panel/background/save-edited'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'image/png',
+      /*
+       * ⚠️ 文件名要 URL 编码后再放进请求头。
+       * HTTP 头只能是 ISO-8859-1，而源文件名里可能有中文（例如用户
+       * 已经编辑过一次，名字里带「编辑」）——直接塞进去 fetch 会抛：
+       *   「Failed to read the 'headers' property: String contains
+       *     non ISO-8859-1 code point.」
+       * 后端用 decodeURIComponent 还原（中文 utf-8 的百分号编码是 ASCII）。
+       */
+      'X-Base-Name': encodeURIComponent(baseName),
+    },
+    body: blob,
+  })
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`
+    try {
+      const body = (await res.json()) as { error?: string }
+      if (body.error) detail = body.error
+    } catch {
+      // 非 JSON，保持 HTTP 码
+    }
+    throw new ApiError(`保存编辑结果失败：${detail}`, res.status)
+  }
+  const data = (await res.json()) as { url?: string; name?: string }
+  if (!data.url) throw new ApiError('保存成功但后端未返回图片地址')
+  return { url: data.url, name: data.name ?? '' }
+}
+
+// ──────────────────────────── 命名样式 API ────────────────────────────
+
+/** `GET /api/panel/styles` 的响应。 */
+export interface PanelStylesResponse {
+  styles: PanelStyleConfig[]
+  default_style_id: string
+}
+
+/** 读取全部面板样式。 */
+export function getPanelStyles(): Promise<PanelStylesResponse> {
+  return request('/api/panel/styles')
+}
+
+/** 新建一套样式（`fromId` 给出时从该样式复制）。返回新样式的 id。 */
+export function createPanelStyle(name: string, fromId?: string): Promise<{ id: string }> {
+  return request('/api/panel/styles', {
+    method: 'POST',
+    body: JSON.stringify({ name, from_id: fromId ?? null }),
+  })
+}
+
+/** 更新一套样式（整体替换，按 `style.id` 定位）。 */
+export function updatePanelStyle(style: PanelStyleConfig): Promise<{ ok: boolean }> {
+  return request('/api/panel/styles', {
+    method: 'PUT',
+    body: JSON.stringify({ style }),
+  })
+}
+
+/** 删除一套样式。返回更新后的默认样式 id。 */
+export function deletePanelStyle(id: string): Promise<{ ok: boolean; default_style_id: string }> {
+  return request('/api/panel/styles', {
+    method: 'DELETE',
+    body: JSON.stringify({ id }),
+  })
+}
+
+/** 设置默认样式。 */
+export function setDefaultPanelStyle(id: string): Promise<{ ok: boolean }> {
+  return request('/api/panel/default-style', {
+    method: 'POST',
+    body: JSON.stringify({ id }),
+  })
 }
 
 /**

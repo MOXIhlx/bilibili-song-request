@@ -23,31 +23,37 @@ const store = useAppStore()
  * ## ⚠️ 为什么不能只读 `store.config`
  * `store.bootstrap()` 只在 **控制台**（`App.vue` 的 `onMounted`）里跑。
  * 面板页是 OBS 浏览器源直接打开的独立页面，`store.config` **永远是 null**——
- * 于是「默认样式」里的背景图、主色、字号等对面板**完全不生效**，
+ * 于是样式里的背景图、主色、字号等对面板**完全不生效**，
  * 只有 URL 参数才管用（实测：配置里 `bg_image` 有值，面板却是
  * `--panel-bg-image: none`）。
  *
- * 这里自己拉一次配置，URL 参数仍然优先（由 `resolvePanelStyle` 决定）。
+ * 这里自己拉一次配置：地址里的 `?style=<id>` 从这份列表里查，
+ * 查不到则回落到 `default_style_id`。
  */
-const configDefaults = ref<Partial<import('@/types').PanelStyleConfig> | null>(null)
+const configStyles = ref<import('@/types').PanelStyleConfig[] | null>(null)
+const configDefaultId = ref<string | null>(null)
 
 onMounted(async () => {
-  if (store.config?.panel) {
-    configDefaults.value = store.config.panel
+  // 控制台里已经有配置就直接用，省一次请求
+  if (store.config?.panel_styles?.length) {
+    configStyles.value = store.config.panel_styles
+    configDefaultId.value = store.config.default_style_id
     return
   }
   try {
     const cfg = await getConfig()
-    configDefaults.value = cfg.panel
+    configStyles.value = cfg.panel_styles
+    configDefaultId.value = cfg.default_style_id
   } catch (err) {
-    // 取不到就用内置默认值，绝不让面板空白
-    console.warn('面板读取默认样式失败，使用内置默认值：', err)
+    // 取不到就用内置默认样式，绝不让面板空白
+    console.warn('面板读取样式列表失败，使用内置默认样式：', err)
   }
 })
 
 /** 面板样式（内部订阅 URL 变化，改 OBS 地址即时生效）。 */
 const style = usePanelStyle(
-  () => configDefaults.value ?? store.config?.panel,
+  () => configStyles.value ?? store.config?.panel_styles,
+  () => configDefaultId.value ?? store.config?.default_style_id,
 )
 
 /**
