@@ -56,6 +56,8 @@ export interface ResolvedPanelStyle {
   track: string
   /** 背景图 URL（默认无）。 */
   bgImage: string | null
+  /** 背景图不透明度（0~1，默认 1）。 */
+  bgOpacity: number
   fontSize: number
   /** 字号倍率（**只来自地址**，每个源可以不同）。 */
   scale: number
@@ -145,6 +147,7 @@ export const FALLBACK_STYLE: PanelStyleConfig = {
   surface: 'transparent',
   track: 'transparent',
   bg_image: null,
+  bg_opacity: 1,
   font_size: 16,
   scale: 1,
   limit: 8,
@@ -177,6 +180,10 @@ export function styleToResolved(
     surface: style.surface,
     track: style.track,
     bgImage: style.bg_image,
+    // 兜底 1：老配置没有这个字段时行为与加字段前一致
+    bgOpacity: Number.isFinite(style.bg_opacity)
+      ? Math.min(Math.max(style.bg_opacity, 0), 1)
+      : 1,
     fontSize: style.font_size,
     // 倍率只来自地址；样式里的 scale 作为「没有地址参数时的默认倍率」
     scale: scaleOverride ?? style.scale ?? 1,
@@ -312,6 +319,13 @@ export function styleToCssVars(style: ResolvedPanelStyle): Record<string, string
     '--panel-track': style.track,
     // 背景图：没有就不设（保持 none），避免生成 `url("")`
     ...(bgImage ? { '--panel-bg-image': `url("${bgImage}")` } : {}),
+    /*
+     * 背景图不透明度。
+     *
+     * ⚠️ 它作用在承载背景图的那层 `::before` 上，**不是**整个面板——
+     * 否则调淡背景会把文字一起变淡，这个功能就没意义了。
+     */
+    '--panel-bg-opacity': String(style.bgOpacity),
     '--panel-bg': style.transparent
       ? 'transparent'
       : style.theme === 'dark'

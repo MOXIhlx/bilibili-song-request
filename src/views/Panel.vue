@@ -406,6 +406,8 @@ function formatDuration(seconds: number): string {
   --panel-stroke: transparent;
   /* 背景图（可选，由 bgImage 参数给出 URL） */
   --panel-bg-image: none;
+  /* 背景图不透明度（0~1）。只作用于承载背景图的那层 ::before */
+  --panel-bg-opacity: 1;
 
   box-sizing: border-box;
   width: 100%;
@@ -414,13 +416,41 @@ function formatDuration(seconds: number): string {
   font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, sans-serif;
   font-size: var(--panel-font-size);
   color: var(--panel-fg);
+  /* 只留底色；背景图交给下面的 ::before —— 那样才能单独调它的不透明度 */
   background-color: var(--panel-bg);
+  transform-origin: top left;
+  zoom: var(--panel-scale);
+  /* ::before 的定位基准 */
+  position: relative;
+}
+
+/*
+ * 背景图层。
+ *
+ * ## 为什么要单独一层
+ * `background-image` 本身没法设「不透明度」——`opacity` 是**元素级**的，
+ * 直接设在 `.obs-panel` 上会把文字一起变淡，那这个功能就没意义了。
+ * 所以把背景图挪到一层 `::before` 上，`opacity` 就只作用于它。
+ *
+ * `pointer-events: none` 必须加：否则这层会盖住面板里的可点区域。
+ */
+.obs-panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   background-image: var(--panel-bg-image);
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
-  transform-origin: top left;
-  zoom: var(--panel-scale);
+  opacity: var(--panel-bg-opacity);
+  pointer-events: none;
+}
+
+/* 内容抬到背景层之上 */
+.obs-panel > .panel-flow {
+  position: relative;
+  z-index: 1;
 }
 
 /*

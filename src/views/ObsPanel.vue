@@ -304,6 +304,7 @@ const DEFAULT_PANEL = {
   surface: 'transparent',
   track: 'transparent',
   bg_image: null,
+  bg_opacity: 1,
   font_size: 16,
   scale: 1,
   limit: 8,
@@ -1035,6 +1036,13 @@ function applyBgImageInput(): void {
   showMessage('ok', '已应用，记得保存默认样式')
 }
 
+/** 设置背景图不透明度（只影响背景图层，不影响文字）。 */
+function setBgOpacity(raw: string): void {
+  const n = Number(raw)
+  if (!draft.value || !Number.isFinite(n)) return
+  draft.value.bg_opacity = Math.min(Math.max(n, 0), 1)
+}
+
 function clearBackground(): void {
   if (!draft.value) return
   draft.value.bg_image = null
@@ -1641,6 +1649,30 @@ async function copyAll(): Promise<void> {
           早期是「文件名 / 大小 / 操作」表格，缩略图只在卡片里显示一张，
           要认出是哪张图只能逐张点开预览——实测反馈就是"看不清"。
         -->
+        <h4>不透明度</h4>
+        <div class="opacity-row">
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            :value="draft.bg_opacity"
+            :disabled="!draft.bg_image"
+            @input="setBgOpacity(($event.target as HTMLInputElement).value)"
+          />
+          <span class="mono">{{ Math.round(draft.bg_opacity * 100) }}%</span>
+          <button
+            v-if="draft.bg_opacity !== 1"
+            class="mini"
+            title="恢复 100%"
+            @click="setBgOpacity('1')"
+          >✕</button>
+        </div>
+        <p class="dim">
+          只影响背景图，不影响文字。调淡可以当底纹用，让面板上的字更清楚。
+          <template v-if="!draft.bg_image">（当前没有选背景图）</template>
+        </p>
+
         <h4>图片库</h4>
         <div v-if="backgrounds.length" class="bg-grid">
           <div
@@ -2814,6 +2846,29 @@ p.warn {
 }
 
 /* ── 背景图预览（阶段 10b）────────────────────────────────────────────── */
+
+/* 不透明度一行：滑块 + 百分比 + 恢复按钮 */
+.opacity-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+  max-width: 360px;
+}
+
+.opacity-row input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--bsr-accent);
+}
+
+.opacity-row .mono {
+  flex: none;
+  min-width: 42px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--bsr-muted);
+}
 
 .bg-preview-wrap {
   margin-top: 10px;

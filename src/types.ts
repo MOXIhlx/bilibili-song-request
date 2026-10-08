@@ -344,6 +344,14 @@ export interface PanelStyleConfig {
    * 不存变换参数——避免「样式里存了变换、但图片被换掉」导致对不上。
    */
   bg_image: string | null
+  /**
+   * 背景图不透明度（0~1，默认 1 = 完全不透明）。
+   *
+   * 调淡后可当**底纹**用，让文字更清楚，不必先去外部软件把图调亮。
+   * 面板用一层 \`::before\` 承载背景图并设它的 \`opacity\`，
+   * 所以**不会**连带把文字也变透明。
+   */
+  bg_opacity: number
   font_size: number
   scale: number
   limit: number

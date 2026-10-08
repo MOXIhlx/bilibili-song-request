@@ -253,6 +253,12 @@ pub struct PanelStyleConfig {
     /// 图片的裁剪/旋转/镜像在编辑时**烘焙进新图片文件**，所以这里只存路径，
     /// 不存变换参数——避免「样式里存了变换、但图片被换掉」导致的对不上。
     pub bg_image: Option<String>,
+    /// 背景图不透明度（`0.0` ~ `1.0`，默认 `1.0` = 完全不透明）。
+    ///
+    /// 用途：把背景图调淡当**底纹**用，让文字更清楚，不必去外部软件先把图调亮。
+    /// 面板用一层 `::before` 承载背景图并设它的 `opacity`，
+    /// 所以**不会**连带把文字也变透明。
+    pub bg_opacity: f64,
     pub font_size: u32,
     pub scale: f64,
     pub limit: usize,
@@ -297,6 +303,8 @@ impl Default for PanelStyleConfig {
             surface: "transparent".to_string(),
             track: "transparent".to_string(),
             bg_image: None,
+            // 1.0 = 完全不透明，与加这个字段之前的行为一致
+            bg_opacity: 1.0,
             font_size: 16,
             scale: 1.0,
             limit: 8,
