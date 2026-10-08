@@ -1150,6 +1150,79 @@ const previewUrl = computed(() => {
 /** 桥接页地址：与预览同源，用综合面板即可（它已内置 message 处理）。 */
 const bridgeUrl = computed(() => apiUrl('/panel'))
 
+// ── 当前背景图的等比预览 ────────────────────────────────────────────────
+
+/** 当前背景图的宽高比（`width / height`），量不到时回落到 16:9。 */
+const bgPreviewRatio = ref('16 / 9')
+
+/**
+ * 预览框的**实际像素尺寸**（在 JS 里算好，不靠 CSS 自动推导）。
+ *
+ * ## 为什么不交给 CSS
+ * 试过两种纯 CSS 方案，都不成立：
+ *  - `aspect-ratio: 850/1323` + `max-height: 320px` → 实测渲染成 1191×320
+ *    （比例 3.7），因为高度被夹住后浏览器不再按比例回算宽度；
+ *  - `padding-top: 155%` 撑高 + `max-height` → 高度被夹住了，但**宽度仍拉满**，
+ *    得到 1191×1856 的巨块。
+ *
+ * 比例本来就是已知的（`bgPreviewRatio`），直接算最稳：
+ * 高度封顶 320px，宽度按比例反算，再限制不超过容器宽度。
+ * 容器宽度取不到时先给一个保守值，等 `onMounted` 量到后再刷新。
+ */
+const bgPreviewMaxW = ref(560)
+
+/** 量一下预览所在卡片的可用宽度，避免小窗口下溢出。 */
+const bgPreviewWrapEl = ref<HTMLElement | null>(null)
+let bgPreviewRO: ResizeObserver | null = null
+onMounted(() => {
+  const el = bgPreviewWrapEl.value?.parentElement
+  if (!el) return
+  const sync = () => {
+    const w = el.clientWidth
+    if (w > 0) bgPreviewMaxW.value = w
+  }
+  sync()
+  bgPreviewRO = new ResizeObserver(sync)
+  bgPreviewRO.observe(el)
+})
+onBeforeUnmount(() => bgPreviewRO?.disconnect())
+
+const bgPreviewBox = computed(() => {
+  const [w, h] = bgPreviewRatio.value.split('/').map((v) => Number(v.trim()))
+  const ratio = w > 0 && h > 0 ? w / h : 16 / 9
+  const MAX_H = 320
+  let height = MAX_H
+  let width = height * ratio
+  const maxW = bgPreviewMaxW.value
+  if (width > maxW) {
+    width = maxW
+    height = width / ratio
+  }
+  return { w: Math.round(width), h: Math.round(height) }
+})
+
+/**
+ * 量当前背景图的真实比例。
+ *
+ * 有比例才能让预览「等比显示整张图」而不是固定高度裁一条。
+ * 用 `new Image()` 加载同一地址来量——与模板里的背景图各自加载，
+ * 但浏览器会命中同一份缓存，不会真的多下一次。
+ */
+watch(
+  () => draft.value?.bg_image,
+  (url) => {
+    if (!url) return
+    const probe = new Image()
+    probe.onload = () => {
+      if (probe.naturalWidth > 0 && probe.naturalHeight > 0) {
+        bgPreviewRatio.value = `${probe.naturalWidth} / ${probe.naturalHeight}`
+      }
+    }
+    probe.src = absoluteBg(url)
+  },
+  { immediate: true },
+)
+
 /** 预览标题（跟随实际预览的面板，而不是用户点过但已关闭的那个）。 */
 const previewLabel = computed(() => {
   const list = pages.value
@@ -1715,8 +1788,15 @@ async function copyAll(): Promise<void> {
           还没有图片。用上面的「上传新图片」加一张，或填写外部图片地址。
         </p>
         <!-- 预览：让用户确定图片真的能加载（相对路径在跨源预览里曾 404） -->
-        <div v-if="draft.bg_image" class="bg-preview-wrap">
-          <div class="bg-preview" :style="{ backgroundImage: `url(${absoluteBg(draft.bg_image)})` }" />
+        <div v-if="draft.bg_image" ref="bgPreviewWrapEl" class="bg-preview-wrap">
+          <div
+            class="bg-preview"
+            :style="{
+              width: `${bgPreviewBox.w}px`,
+              height: `${bgPreviewBox.h}px`,
+              '--bg-preview-image': `url(${absoluteBg(draft.bg_image)})`,
+            }"
+          />
         </div>
       </section>
 
@@ -2305,15 +2385,32 @@ async function copyAll(): Promise<void> {
   padding: 0;
   border: 1px solid var(--bsr-border);
   border-radius: 8px;
-  /* 棋盘底：透明区域一眼可见；图片覆盖在上面 */
   background-color: #f6e9ef;
-  background-image:
-    repeating-conic-gradient(rgb(255 111 165 / 10%) 0% 25%, transparent 0% 50%);
-  background-size: 16px 16px, cover;
-  background-position: 0 0, center;
-  background-repeat: repeat, no-repeat;
+  /* 图片**独占**一层背景（棋盘格在下面的伪元素里） */
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
   cursor: pointer;
   overflow: hidden;
+}
+
+/*
+ * 棋盘格放在伪元素上，**和图片分成两层**。
+ *
+ * ⚠️ 早期两者挤在同一个 `background` 简写里（两层，各带 repeat/size），
+ * 而模板用行内 `backgroundImage` 只覆盖了**一层**——层数对不上号，
+ * 第二层的 `cover` / `no-repeat` 就落空了，图片按默认 `repeat` 平铺，
+ * 表现为缩略图里人物被重复成一格一格（用户报的「不要平铺开」）。
+ *
+ * 拆成两层后，行内样式只碰图片那一层，互不干扰。
+ */
+.bg-thumb::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: repeating-conic-gradient(rgb(255 111 165 / 10%) 0% 25%, transparent 0% 50%);
+  background-size: 16px 16px;
+  pointer-events: none;
 }
 
 .bg-thumb:hover {
@@ -2874,17 +2971,52 @@ p.warn {
   margin-top: 10px;
 }
 
+/*
+ * 当前背景图的**等比预览**。
+ *
+ * ⚠️ 早期是 `height: 140px` + `background-size: cover`——那是一根"取样条"：
+ * 只显示图片中段一条、左右撑满，看起来就是被拉长了。
+ *
+ * 现在改为「等比显示整张图」：用 `padding-top` 百分比撑出与图片一致的高宽比
+ * （百分比 padding 是相对**宽度**计算的，所以 `高/宽 × 100%` 就能得到正确比例），
+ * 再用 `max-height` 封顶竖图。**不用 `aspect-ratio`**：它和 `max-height`
+ * 一起用时实测会被压成 1191×320（比例 3.7，而不是图片真实的 0.64），
+ * 因为高度被夹住后浏览器不再按比例回算宽度。
+ */
+.bg-preview-wrap {
+  margin-top: 10px;
+}
+
 .bg-preview {
-  height: 140px;
+  position: relative;
+  /*
+   * 宽度用 `fit-content` + `max-width` 而不是 `100%`：
+   * padding 撑高时高度已定，若宽度也拉满就会得到「宽 × 比例高」的巨块
+   * （实测竖图 1191×1856）。加上 `max-height` 后，这里让它按高度约束
+   * **等比缩小**，再居中显示。
+   */
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto;
+  /* 高度由内联的 padding-top 按图片比例给出 */
+  max-height: 320px;
+  overflow: hidden;
   border: 1px solid var(--bsr-border);
   border-radius: 8px;
-  /* 浅粉灰底：图片未覆盖到的区域一眼可见，且与粉白主题协调 */
   background-color: #f6e9ef;
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
   /* 图片加载失败时不会「看起来像没生效」，这里给个浅色底 */
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
+}
+
+/* 图片层：绝对定位铺满，`contain` 保证完整显示且不变形 */
+.bg-preview::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: var(--bg-preview-image, none);
+  background-size: contain;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 /* 预览框：棋盘底纹以便看清「透明背景」是否生效 */
