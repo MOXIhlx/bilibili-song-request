@@ -1,19 +1,33 @@
 /*
  * 全局基础样式与设计变量。
- * 桌面窗口使用深色主题；OBS 面板样式独立在 Panel.vue 内，不受这里影响。
+ *
+ * 主题：**粉白少女风**。桌面窗口与浏览器控制台都用这套；
+ * OBS 面板的样式独立在 Panel.vue 内（有自己的 --panel-* 变量）。
  */
 :root {
-  --bsr-bg: #0b1220;
-  --bsr-bg-elevated: #131c2e;
-  --bsr-fg: #e8eefc;
-  --bsr-muted: #93a4c4;
-  --bsr-border: #24314b;
-  --bsr-accent: #7dd3fc;
-  --bsr-accent-soft: rgba(125, 211, 252, 0.16);
-  --bsr-success: #4ade80;
-  --bsr-danger: #f87171;
+  /*
+   * 配色集中在这里：各视图只引用 `var(--bsr-*)`，不写死颜色，
+   * 因此换主题只需改这一段。
+   *
+   * 设计思路：
+   *  - 底色用极浅的暖粉（#fff5f9）而不是纯白：长时间看不刺眼，也更"软"
+   *  - 卡片用纯白 + 淡粉边框，形成「奶油蛋糕」式的层次
+   *  - 强调色是正粉（#ff6fa5），链接 / 选中态 / 进度条统一用它
+   *  - 成功色偏低饱和的青绿（避免与主题粉打架），失败色用柔和玫红
+   *  - 文字用带紫调的深棕（#5a4450）而不是纯黑，更衬粉色
+   */
+  --bsr-bg: #fff5f9;
+  --bsr-bg-elevated: #ffffff;
+  --bsr-fg: #5a4450;
+  --bsr-muted: #a98b98;
+  --bsr-border: #ffd9e6;
+  --bsr-accent: #ff6fa5;
+  --bsr-accent-soft: rgba(255, 111, 165, 0.14);
+  --bsr-success: #58c9a0;
+  --bsr-danger: #ff5c8a;
+  --bsr-warning: #ffab5e;
 
-  color-scheme: dark;
+  color-scheme: light;
   font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, -apple-system, sans-serif;
 }
 
@@ -47,4 +61,24 @@ body.bsr-dashboard-body {
 
 a {
   color: var(--bsr-accent);
+}
+
+/*
+ * 原生控件的主题色。
+ *
+ * ⚠️ checkbox / radio / 进度类的原生渲染色**不受 CSS 变量影响**，
+ * 不设 `accent-color` 就会用系统默认蓝（WebView2 下约 rgb(0,120,215)），
+ * 在粉白界面上很突兀。滑块另有各自的 ::-webkit-slider-* 规则，见 Dashboard.vue。
+ */
+input[type='checkbox'],
+input[type='radio'],
+input[type='range'],
+progress {
+  accent-color: var(--bsr-accent);
+}
+
+/* 文本选中高亮也换成主题粉 */
+::selection {
+  background: var(--bsr-accent-soft);
+  color: var(--bsr-fg);
 }

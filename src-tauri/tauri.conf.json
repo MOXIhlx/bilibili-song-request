@@ -31,6 +31,7 @@
     "targets": ["nsis"],
     "icon": ["icons/icon.ico"],
     "resources": ["../dist"],
+    "externalBin": ["binaries/mpv"],
     "windows": {
       "nsis": {
         "installMode": "currentUser",

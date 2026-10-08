@@ -1326,6 +1326,7 @@ function formatTime(iso: string): string {
             min="0"
             max="100"
             :value="volumePreview ?? store.player?.volume ?? 80"
+            :style="{ '--vol-progress': `${volumePreview ?? store.player?.volume ?? 80}%` }"
             @input="onVolumeInput"
             @change="onVolumeCommit"
           />
@@ -2231,8 +2232,8 @@ button.danger {
 }
 
 .prio-tag.host {
-  background: color-mix(in srgb, #fbbf24 24%, transparent);
-  color: #fbbf24;
+  background: color-mix(in srgb, var(--bsr-warning) 24%, transparent);
+  color: var(--bsr-warning);
   font-weight: 600;
 }
 
@@ -2352,23 +2353,23 @@ button.danger {
   padding: 10px 12px;
   border-radius: 8px;
   border-left: 3px solid var(--bsr-muted);
-  background: rgba(148, 163, 184, 0.08);
+  background: color-mix(in srgb, var(--bsr-muted) 10%, transparent);
   font-size: 13px;
 }
 
 .conn-status.ok {
-  border-left-color: #34d399;
-  background: rgba(52, 211, 153, 0.1);
+  border-left-color: var(--bsr-success);
+  background: color-mix(in srgb, var(--bsr-success) 12%, transparent);
 }
 
 .conn-status.busy {
-  border-left-color: #fbbf24;
-  background: rgba(251, 191, 36, 0.1);
+  border-left-color: var(--bsr-warning);
+  background: color-mix(in srgb, var(--bsr-warning) 12%, transparent);
 }
 
 .conn-status.err {
-  border-left-color: #f87171;
-  background: rgba(248, 113, 113, 0.1);
+  border-left-color: var(--bsr-danger);
+  background: color-mix(in srgb, var(--bsr-danger) 12%, transparent);
 }
 
 .conn-head {
@@ -2386,16 +2387,16 @@ button.danger {
 }
 
 .conn-dot.ok {
-  background: #34d399;
+  background: var(--bsr-success);
 }
 
 .conn-dot.busy {
-  background: #fbbf24;
+  background: var(--bsr-warning);
   animation: pulse 1.2s ease-in-out infinite;
 }
 
 .conn-dot.err {
-  background: #f87171;
+  background: var(--bsr-danger);
 }
 
 @keyframes pulse {
@@ -2518,6 +2519,73 @@ button.danger {
   min-width: 0;
 }
 
+/*
+ * 音量滑块的自定义样式。
+ *
+ * ⚠️ 不写这段的话，`<input type="range">` 会用**系统原生的蓝色主题**
+ * （WebView2 下约 `rgb(0,120,215)`），在粉白界面上非常突兀——
+ * 原生控件颜色不受 CSS 变量影响，必须自己画轨道和滑块。
+ */
+.volume input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px; /* 给滑块留出垂直空间，否则圆点会被裁掉 */
+  background: transparent;
+  cursor: pointer;
+}
+
+.volume input[type='range']::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  /* 已选部分用主题粉，剩余部分用淡粉边框色 */
+  background: linear-gradient(
+    to right,
+    var(--bsr-accent) 0%,
+    var(--bsr-accent) var(--vol-progress, 0%),
+    var(--bsr-border) var(--vol-progress, 0%),
+    var(--bsr-border) 100%
+  );
+}
+
+.volume input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -4px; /* 让圆点居中于 6px 轨道 */
+  border-radius: 50%;
+  background: var(--bsr-bg-elevated);
+  border: 2px solid var(--bsr-accent);
+  box-shadow: 0 1px 4px rgb(255 111 165 / 38%);
+  transition: transform 0.12s ease;
+}
+
+.volume input[type='range']:hover::-webkit-slider-thumb,
+.volume input[type='range']:focus::-webkit-slider-thumb {
+  transform: scale(1.15);
+}
+
+/* 取值范围（已拖过的一段）——Firefox 系用这个伪元素，保留兼容 */
+.volume input[type='range']::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bsr-border);
+}
+
+.volume input[type='range']::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bsr-accent);
+}
+
+.volume input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--bsr-bg-elevated);
+  border: 2px solid var(--bsr-accent);
+}
+
 .danmaku {
   margin: 0;
   padding: 0;
@@ -2598,8 +2666,8 @@ button.danger {
 }
 
 .outcome-tag.queued {
-  background: color-mix(in srgb, #34d399 22%, transparent);
-  color: #34d399;
+  background: color-mix(in srgb, var(--bsr-success) 22%, transparent);
+  color: var(--bsr-success);
 }
 
 .outcome-tag.rejected {

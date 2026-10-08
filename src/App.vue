@@ -236,7 +236,8 @@ onUnmounted(() => {
   border: 1px solid var(--bsr-border);
   border-radius: 50%;
   background: var(--bsr-bg-elevated);
-  box-shadow: 0 6px 18px rgb(0 0 0 / 26%);
+  /* 淡粉阴影：深色阴影在浅粉底上会显脏 */
+  box-shadow: 0 6px 18px rgb(255 111 165 / 22%);
   font-size: 17px;
   line-height: 1;
   cursor: pointer;
@@ -271,7 +272,8 @@ onUnmounted(() => {
   border-left-width: 3px;
   border-radius: 8px;
   background: var(--bsr-bg-elevated);
-  box-shadow: 0 6px 18px rgb(0 0 0 / 22%);
+  /* 同上：用粉色阴影而不是黑色 */
+  box-shadow: 0 6px 18px rgb(255 111 165 / 18%);
   font-size: 13px;
   line-height: 1.5;
 }
@@ -305,7 +307,7 @@ onUnmounted(() => {
 }
 
 .msg.warn {
-  border-left-color: var(--bsr-warning, #d99a2b);
+  border-left-color: var(--bsr-warning);
 }
 
 .msg.info {

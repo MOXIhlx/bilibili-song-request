@@ -42,18 +42,10 @@ B站直播服务器 ──WebSocket弹幕流──▶ 本地 exe（Tauri 2 + Rus
 
 ### 安装
 
-1. 下载并运行安装包（`bilibili-song-request_<版本>_x64-setup.exe`），按提示安装。
+1. 下载并运行安装包（`bilibili-song-request_<版本>_x64-setup.exe`，约 36 MB），按提示安装。
    安装程序默认只装当前用户，不需要管理员权限。
-2. 安装 **mpv**（播放音乐的引擎，可选但强烈建议）：
-
-   ```powershell
-   winget install shinchiro.mpv
-   ```
-
-   装好后**不需要**配置路径，程序会自动在系统安装位置找到它（详见「6.3 播放器」）。
-   若确实找不到，可设置环境变量 `BSR_MPV_PATH` 指向 `mpv.exe`（见「11. 常见问题」）。
-
-3. 安装 **WebView2 运行时**：Windows 11 自带；Windows 10 若缺失，安装程序会提示，
+   **mpv（播放引擎）已包含在安装包里**，不需要单独安装。
+2. 安装 **WebView2 运行时**：Windows 11 自带；Windows 10 若缺失，安装程序会提示，
    也可自行下载（Microsoft Edge WebView2 Runtime）。
 
 ### 第一次使用
@@ -939,23 +931,23 @@ sqlite3 "$env:TEMP\ck.db" "select host_key, name from cookies order by host_key;
 找不到时**不会阻止程序启动**：控制台会提示「未检测到 mpv」，`/api/player/status` 的
 `available` 为 `false`，播放按钮禁用，但点歌、队列、面板都照常工作。
 
-安装 mpv（三选一）：
+安装 mpv（**用安装包的用户不用做这一步——mpv 已内置**；下面三种是源码构建/裸 exe 场景）：
 
 ```powershell
 # ① 推荐：winget 安装完整版（含所需 DLL，最省事）
 winget install shinchiro.mpv
 
-# ② 让程序把 mpv 作为 sidecar 一起打包（需要一个独立 exe）
+# ② 让程序把 mpv 作为 sidecar 一起打包（当前安装包就是这么做的）
 npm run fetch:mpv            # 下载并放到 src-tauri/binaries/mpv-x86_64-pc-windows-msvc.exe
-npm run tauri:build          # 安装包里会带上它
+npm run tauri:build          # 安装包里会带上它，安装后落在程序同级的 mpv.exe
 
 # ③ 手动指定已有的 mpv
 $env:BSR_MPV_PATH = "D:\tools\mpv\mpv.exe"
 ```
 
-> 说明：`scripts/fetch-mpv.ps1` 只复制 `mpv.exe` 主程序。
-> 若运行时提示缺少 DLL，请改用方式 ①（完整安装包）——sidecar 方案适合
-> 你自己确认过依赖齐全的场景。
+> 说明：`scripts/fetch-mpv.ps1` 只复制 `mpv.exe` 主程序。实测 shinchiro 的构建是
+> **静态链接**的，单独一个 exe 就能跑（不需要同包的 `d3dcompiler_43.dll`），
+> 所以 sidecar 方案是可靠的——安装包里带的就是它。
 
 ### 启动参数
 
@@ -1257,14 +1249,19 @@ npm run tauri:build
 
 ### mpv 的两种分发方式
 
-| 方式 | 做法 | 适合 |
+| 方式 | 做法 | 结果 |
 |------|------|------|
-| 依赖用户已安装的 mpv | 什么都不做，装完提示用户 `winget install shinchiro.mpv` | 包体积小（安装包约 10MB 级），推荐 |
-| 作为 sidecar 一起打包 | `npm run fetch:mpv` 后 `npm run tauri:build`，安装包里带上 `mpv.exe` | 想让用户零配置；包体积 +几十 MB |
+| **作为 sidecar 一起打包（当前采用）** | `npm run fetch:mpv` 后 `npm run tauri:build`，安装包里带上 `mpv.exe` | 用户**装完开箱即用**；安装包约 36.6 MB |
+| 依赖用户已安装的 mpv | 去掉 `bundle.externalBin`，装完提示用户 `winget install shinchiro.mpv` | 安装包约 3.6 MB，但要用户自己装播放引擎 |
 
 sidecar 命名必须是 `<名称>-<目标三元组>.exe`（Windows MSVC 为
 `mpv-x86_64-pc-windows-msvc.exe`），放在 `src-tauri/binaries/`；
-构建时通过 `bundle.externalBin` 声明（当前**未声明**，属于可选步骤）。
+构建时通过 `bundle.externalBin` 声明（当前**已声明**为 `["binaries/mpv"]`）。
+安装后 Tauri 会把它重命名为 `mpv.exe` 放在程序同级，程序查找 mpv 时同目录优先。
+
+> `src-tauri/binaries/mpv-*.exe` 有 **115 MB**，已在 `.gitignore` 中忽略，
+> **不入库**。因此**在新机器上打包前必须先跑一次 `npm run fetch:mpv`**。
+> 依赖代理下载（国内直连 GitHub 会超时）。
 
 ### 发布前检查清单
 
@@ -1272,8 +1269,9 @@ sidecar 命名必须是 `<名称>-<目标三元组>.exe`（Windows MSVC 为
 npm run check:versions        # 三处版本一致
 npm run build                 # 前端 + 类型检查
 npm test                      # 前端单测
-cd src-tauri; cargo test      # 后端测试（当前 156 个）
+cd src-tauri; cargo test      # 后端测试（当前 317 个）
 cd src-tauri; cargo check --all-targets   # 零告警
+npm run fetch:mpv             # 准备 mpv sidecar（新机器必做）
 npm run tauri:build           # 出安装包
 ```
 

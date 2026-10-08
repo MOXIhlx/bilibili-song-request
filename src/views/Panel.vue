@@ -258,11 +258,14 @@ function formatDuration(seconds: number): string {
 /*
  * 透明背景说明：OBS 浏览器源必须勾选「透明背景」，
  * 同时这里不能给根节点设置任何不透明底色（bg=transparent 时）。
+ *
+ * 默认配色与桌面窗口一致（粉白少女风）：强调色为正粉，文字用带紫调的深棕，
+ * 这样在浅色背景图上也有足够对比度。这些值都可以被面板样式配置覆盖。
  */
 .obs-panel {
-  --panel-color: #7dd3fc;
-  --panel-fg: #f8fafc;
-  --panel-sub: rgba(248, 250, 252, 0.62);
+  --panel-color: #ff6fa5;
+  --panel-fg: #5a4450;
+  --panel-sub: rgba(90, 68, 80, 0.62);
   --panel-bg: transparent;
   /* 卡片/列表底色与进度条轨道：默认全透明，只要文字与进度条颜色 */
   --panel-surface: transparent;

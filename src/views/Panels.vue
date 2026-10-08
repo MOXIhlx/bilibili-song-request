@@ -95,8 +95,10 @@ const PARAM_SPECS: Record<ParamName, ParamSpec> = {
     label: '卡片底色 surface',
     presets: [
       { value: 'transparent', label: 'transparent（不要底色）' },
+      { value: '#ffffffb3', label: '#ffffffb3 淡白（配粉白主题）' },
+      { value: '#ffeef5cc', label: '#ffeef5cc 淡粉' },
       { value: '#00000033', label: '#00000033 淡黑' },
-      { value: '#ffffff1a', label: '#ffffff1a 淡白' },
+      { value: '#ffffff1a', label: '#ffffff1a 淡白（深底用）' },
       { value: '#0f172acc', label: '#0f172acc 深蓝' },
     ],
   },
@@ -191,7 +193,7 @@ function makeRow(name: ParamName, value: string): ParamRow {
  */
 const paramRows = ref<ParamRow[]>([
   makeRow('fontSize', '16'),
-  makeRow('color', '#7dd3fc'),
+  makeRow('color', '#ff6fa5'),
   makeRow('surface', 'transparent'),
   makeRow('track', 'transparent'),
   makeRow('limit', '8'),
@@ -347,7 +349,7 @@ const ready = computed(() => draft.value !== null)
 // ── 颜色编辑（阶段 9）────────────────────────────────────────────────────
 
 /** 主题对应的默认字体色（`fg` 为空时用它给取色器一个初值）。 */
-const themeFg = computed(() => (draft.value?.theme === 'light' ? '#0f172a' : '#f8fafc'))
+const themeFg = computed(() => (draft.value?.theme === 'light' ? '#5a4450' : '#f2f2f2'))
 
 /** 取色器回调：把颜色写进对应字段。 */
 function setColor(field: 'fg' | 'color' | 'surface' | 'track', event: Event): void {
@@ -795,7 +797,7 @@ async function copyAll(): Promise<void> {
           <label>进度条颜色（强调色）
             <span class="color-row">
               <input type="color" :value="draft.color" @input="setColor('color', $event)" />
-              <input v-model="draft.color" placeholder="#7dd3fc" />
+              <input v-model="draft.color" placeholder="#ff6fa5" />
             </span>
           </label>
           <label>卡片底色
@@ -1563,13 +1565,13 @@ async function copyAll(): Promise<void> {
   height: 140px;
   border: 1px solid var(--bsr-border);
   border-radius: 8px;
-  /* 棋盘底纹：一眼看出哪些区域是透明的 */
-  background-color: #0b1220;
+  /* 浅粉灰底：图片未覆盖到的区域一眼可见，且与粉白主题协调 */
+  background-color: #f6e9ef;
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
   /* 图片加载失败时不会「看起来像没生效」，这里给个浅色底 */
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
 }
 
 /* 预览框：棋盘底纹以便看清「透明背景」是否生效 */
@@ -1579,15 +1581,16 @@ async function copyAll(): Promise<void> {
   border: 1px solid var(--bsr-border);
   border-radius: 8px;
   overflow: hidden;
-  background: #0b1220;
+  background: #f6e9ef;
 }
 
 .preview-frame.transparent {
+  /* 棋盘格用浅粉灰：既是"透明"的通用视觉约定，又和粉白主题协调 */
   background-image:
-    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
-    linear-gradient(-45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%),
-    linear-gradient(-45deg, transparent 75%, rgba(255, 255, 255, 0.06) 75%);
+    linear-gradient(45deg, rgba(255, 111, 165, 0.12) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 111, 165, 0.12) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 111, 165, 0.12) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 111, 165, 0.12) 75%);
   background-size: 18px 18px;
   background-position:
     0 0,
