@@ -144,58 +144,76 @@ onMounted(async () => {
   sel.keyboard = true
 
   /*
-   * 等图片解码 + 等布局稳定，然后**用像素显式设定**选区。
+   * 等图片真正就绪。
    *
-   * ## 为什么不能用百分比、也不能用 getBoundingClientRect
-   *  - 模板写 `width="80%"` 不行：cropperjs 把 `sel.width` 原样保留成字符串
-   *    `"80%"`，而 `$toCanvas()` 需要数字；
-   *  - `getBoundingClientRect()` 量到的是**显示尺寸**（受 canvas 的 CSS 变换
-   *    影响），而 `$change()` 用的是 canvas 的内部坐标。两者在图片被缩放显示
-   *    时并不相等——实测就是「选区固定在 400×300、输出比例全错」。
-   *
-   * 正确做法：用 `<img>` 的**自然像素**（`naturalWidth/Height`）计算，
-   * 这是图片的真实分辨率，也正是裁剪后输出的像素尺寸。
+   * `$ready()` 是 cropperjs 官方的就绪回调（返回内部的原生 `<img>`），
+   * 比监听自定义元素的 `load` 可靠——`<cropper-image>` 不是原生 `<img>`，
+   * 它身上没有 `complete` / `load` 这些成员。
    */
-  const waitImage = new Promise<void>((resolve) => {
-    if ((img as HTMLImageElement).complete) {
-      resolve()
-      return
-    }
-    img.addEventListener('load', () => resolve(), { once: true })
-    img.addEventListener('error', () => resolve(), { once: true })
-  })
-  await waitImage
+  await (
+    imageEl.value as unknown as { $ready?: () => Promise<unknown> }
+  )?.$ready?.()
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
 
   /**
-   * 按图片真实像素设定选区，取 80% 并居中。
+   * 设定初始选区。
    *
-   * 重试几次而不是设一次就算：自定义元素刚插入时 `$change()` 可能还没真正
-   * 生效（内部布局未完成），设置会被随后的默认值覆盖——症状就是"改了但没变"。
+   * ## ⚠️ 坐标系：必须用 **canvas 坐标**，不是源图像素
+   * 这里踩了两次坑，最终结论是：
+   *  - `$change()` / `sel.width` 用的是 **canvas 坐标系**；
+   *  - 图片由 cropperjs 按 `initialFit`（默认 `cover`）适配到 canvas，
+   *    所以它在 canvas 里的显示尺寸 **不等于** 源图分辨率；
+   *
+   * 早先按"源图 80%"算（680×1058），而 canvas 只有 924×506 —— 选区远大于
+   * 画布，表现为"裁剪框纵向严重越界、图被裁成一条"。
+   *
+   * 现在直接量图片**在 canvas 里的显示矩形**（`getBoundingClientRect`），
+   * 按它的 80% 居中。这个矩形就是 canvas 坐标下的真实占位。
    */
   // 收窄成局部常量：嵌套函数里 TS 会丢掉对 `sel` 的非空判断
   const selection = sel
   function applyInitialSelection(): boolean {
-    const el = img as HTMLImageElement
-    const natW = el.naturalWidth
-    const natH = el.naturalHeight
-    if (!natW || !natH) return false
-    const w = Math.max(20, Math.round(natW * 0.8))
-    const h = Math.max(20, Math.round(natH * 0.8))
-    const x = Math.round((natW - w) / 2)
-    const y = Math.round((natH - h) / 2)
+    const imgRect = (imageEl.value as HTMLElement | null)?.getBoundingClientRect()
+    const canvasRect = document
+      .querySelector<HTMLElement>('.stage cropper-canvas')
+      ?.getBoundingClientRect()
+    if (!imgRect?.width || !imgRect?.height || !canvasRect?.width) return false
+
+    /*
+     * 一切按**图片在画布里的实际占位**来算，而不是 canvas 本身。
+     *
+     * ⚠️ 早先宽高按图片算、但 x/y 用 canvas 居中，两者在"图片没有填满画布"
+     * （例如宽扁的图配窄画布）时会错位——选区会偏向一边。
+     * 现在把图片矩形整体当作参照：80% 尺寸 + 在该矩形内居中。
+     */
+    const imgX = Math.round(imgRect.left - canvasRect.left)
+    const imgY = Math.round(imgRect.top - canvasRect.top)
+    const imgW = Math.max(1, Math.round(imgRect.width))
+    const imgH = Math.max(1, Math.round(imgRect.height))
+
+    const w = Math.max(20, Math.round(imgW * 0.8))
+    const h = Math.max(20, Math.round(imgH * 0.8))
+    const x = Math.round(imgX + (imgW - w) / 2)
+    const y = Math.round(imgY + (imgH - h) / 2)
     selection.$change(x, y, w, h)
-    // 生效的判据：宽高变成了我们给的数字（而不是模板兜底的 0）
-    return (
+
+    /*
+     * 生效判据：宽高变成我们给的数字，**且**选区不大于画布。
+     * 第二条是防回归的关键——之前"设成功了但远大于画布"看起来也像成功。
+     */
+    const okSize =
       Math.round(Number(selection.width)) === w &&
       Math.round(Number(selection.height)) === h
-    )
+    const okFit = w <= canvasRect.width + 2 && h <= canvasRect.height + 2
+    return okSize && okFit
   }
 
-  for (let attempt = 0; attempt < 12; attempt++) {
+  for (let attempt = 0; attempt < 20; attempt++) {
     if (applyInitialSelection()) break
     await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)))
   }
+  // 兜底：万一还是没设上，至少把选区居中，别让用户对着空编辑器
+  if (!Number(selection.width)) selection.$center()
   refreshSize()
 })
 
@@ -364,6 +382,7 @@ const sizeHint = computed(() => {
             rotatable
             scalable
             translatable
+            initial-fit="contain"
           />
           <cropper-shade hidden />
           <cropper-handle action="move" plain />
@@ -465,9 +484,21 @@ header {
   color: var(--bsr-accent);
 }
 
+/*
+ * 编辑舞台。
+ *
+ * ⚠️ **必须有确定高度**，不能用 `flex: 1` 靠父容器撑。
+ * 曾经写成 `flex: 1; min-height: 320px`，而父容器高度不确定 →
+ * `cropper-canvas` 的 `height: 100%` 解析成 `auto` → canvas 塌成 100px 高，
+ * 图片被裁成一条横条（实测 canvas 924×100 而图片 850×1323）。
+ *
+ * 用视口高度给一个明确的像素值，canvas 与图片才有真实的参照可缩放。
+ * `min-height` 兜底小窗口，`max-height` 防止超出屏幕。
+ */
 .stage {
-  flex: 1;
-  min-height: 320px;
+  height: 62vh;
+  min-height: 340px;
+  max-height: 640px;
   border: 1px solid var(--bsr-border);
   border-radius: 8px;
   overflow: hidden;
@@ -484,10 +515,15 @@ header {
   display: block;
 }
 
-.stage :deep(cropper-image) {
-  max-width: 100%;
-  max-height: 100%;
-}
+/*
+ * ⚠️ 这里**不要**给 `cropper-image` 加 `max-width/max-height: 100%`。
+ *
+ * 曾经写过，结果是图片被压扁：`.stage` 只设了 `min-height`、没有确定高度，
+ * 百分比 `max-height` 因此解析到一个很小的值（实测图片被压成 850×100，
+ * 而原图是 850×1322）—— 表现为"图在编辑器里变成一条横条、裁剪框纵向越界"。
+ *
+ * 尺寸交给 cropperjs 自己算：它在 canvas 尺寸确定后会按 `contain` 适配并居中。
+ */
 
 footer {
   display: flex;
