@@ -180,9 +180,6 @@ watch(
   { immediate: true },
 )
 
-/** 模拟弹幕输入（无身份码时验证链路）。 */
-const simulateText = ref('点歌 你还在不在 梁静茹')
-
 /**
  * 点歌请求处理汇总。
  *
@@ -598,7 +595,7 @@ async function toggleAutoConnect(event: Event): Promise<void> {  const checked =
 }
 
 /** 当前选中的标签页。 */
-type TabKey = 'live' | 'queue' | 'idle' | 'logs' | 'blacklist' | 'settings'
+type TabKey = 'live' | 'queue' | 'idle' | 'logs' | 'blacklist'
 const tab = ref<TabKey>('live')
 
 // ── 空闲歌单（阶段 10a）──────────────────────────────────────────────────
@@ -1018,7 +1015,6 @@ const panelUrl = computed(() => apiUrl('/panel'))
 
 /** 配置编辑副本，保存时整体提交。 */
 const draft = ref<Config | null>(null)
-const saved = ref(false)
 /** 拉取配置是否失败（用于给出重试入口，而不是永远显示「加载中」）。 */
 const draftError = ref<string | null>(null)
 
@@ -1111,13 +1107,6 @@ onMounted(() => {
   void refreshIdle()
 })
 
-async function saveSettings(): Promise<void> {
-  if (!draft.value) return
-  await store.updateConfig(draft.value)
-  saved.value = !store.error
-  window.setTimeout(() => (saved.value = false), 1500)
-}
-
 function formatTime(iso: string): string {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString('zh-CN')
@@ -1148,7 +1137,6 @@ function formatTime(iso: string): string {
         <button :class="{ active: tab === 'blacklist' }" @click="tab = 'blacklist'">
           黑名单 <span v-if="blacklist.length" class="badge">{{ blacklist.length }}</span>
         </button>
-        <button :class="{ active: tab === 'settings' }" @click="tab = 'settings'">设置</button>
       </div>
       <button class="ghost refresh-btn" :disabled="store.loading" @click="store.refresh()">
         刷新状态
@@ -1860,86 +1848,6 @@ function formatTime(iso: string): string {
       <p v-else class="empty">黑名单是空的。</p>
     </section>
 
-    <!-- ── 设置 ────────────────────────────────────────────────── -->
-    <section v-else class="card">
-      <div class="card-head">
-        <h3>设置</h3>
-        <div class="controls">
-          <button class="ghost" @click="resetDraft()">重置</button>
-          <button :disabled="!draft" @click="saveSettings()">{{ saved ? '已保存' : '保存' }}</button>
-        </div>
-      </div>
-
-      <template v-if="draft">        <h4>内嵌服务器</h4>
-        <div class="fields">
-          <label>监听地址 <input v-model="draft.server.host" /></label>
-          <label>端口 <input type="number" v-model.number="draft.server.port" /></label>
-        </div>
-        <h4>点歌规则</h4>
-        <div class="fields">
-          <label class="wide">指令正则 <input v-model="draft.rules.command_regex" /></label>
-          <label>冷却（秒）<input type="number" v-model.number="draft.rules.cooldown_secs" /></label>
-          <label>弹幕点歌上限
-            <input type="number" v-model.number="draft.rules.max_queue" />
-          </label>
-          <label>主播每首补名额
-            <input type="number" v-model.number="draft.rules.host_extra_per_play" />
-          </label>
-          <label class="check"><input type="checkbox" v-model="draft.rules.allow_duplicate" /> 允许重复点歌</label>
-          <label>粉丝牌等级下限<input type="number" v-model.number="draft.rules.min_fans_medal_level" /></label>
-          <label>用户等级下限<input type="number" v-model.number="draft.rules.min_user_level" /></label>
-        </div>
-        <h4>搜索平台</h4>
-        <div class="fields">
-          <label class="wide">用哪个平台搜索
-            <select v-model="draft.rules.search_platform">
-              <option value="auto">自动（QQ 优先，必要时用网易云）</option>
-              <option value="qq">只用 QQ 音乐</option>
-              <option value="netease">只用网易云音乐</option>
-            </select>
-          </label>
-        </div>
-        <h4>点歌优先级</h4>
-        <div class="fields">
-          <label class="wide">搜不到精确原唱时
-            <select v-model="draft.rules.pick_policy">
-              <option value="prefer_full_length">优先完整时长（推荐）</option>
-              <option value="prefer_artist">优先原唱</option>
-            </select>
-          </label>
-        </div>
-        <h4>链路自测（排障用）</h4>
-        <p class="dim">
-          注入一条弹幕文本，走完整的解析 → 搜索 → 入队链路，用来验证程序本身是否正常。
-          观众的真实弹幕不受影响。
-        </p>
-        <div class="fields">
-          <label class="wide">弹幕文本
-            <input
-              v-model="simulateText"
-              placeholder="点歌 你还在不在 梁静茹"
-              @keyup.enter="store.simulateDanmaku(simulateText)"
-            />
-          </label>
-        </div>
-        <div class="controls">
-          <button @click="store.simulateDanmaku(simulateText)">注入弹幕</button>
-          <button class="ghost" @click="store.simulateDanmaku('点歌 你还在不在', '测试观众')">
-            注入非点歌弹幕
-          </button>
-        </div>
-        <h4>面板样式</h4>
-        <div class="controls">
-          <RouterLink class="link" to="/settings/obs">打开「设置 → OBS 面板」→</RouterLink>
-        </div>
-      </template>
-      <!-- 拿不到配置时给出明确原因与重试，绝不无尽「加载中」 -->
-      <div v-else-if="draftError" class="empty">
-        <p class="err">读取配置失败：{{ draftError }}</p>
-        <button class="ghost" @click="ensureDraft()">重试</button>
-      </div>
-      <p v-else class="empty">正在加载配置…</p>
-    </section>
   </div>
 </template>
 
