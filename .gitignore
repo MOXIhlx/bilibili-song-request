@@ -40,3 +40,7 @@ src-tauri/binaries/*.dll
 # 本地打包的便携版产物（分发用，见 docs/安装环境.md）
 dist-portable/
 *.zip
+
+# 诊断工具的本地产物（脚本本身在 docs/ 下）
+诊断工具/
+诊断工具.zip

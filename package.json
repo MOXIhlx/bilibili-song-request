@@ -1,7 +1,7 @@
 {
   "name": "bilibili-song-request",
   "private": true,
-  "version": "1.0.2",
+  "version": "1.0.5",
   "type": "module",
   "description": "本地弹幕点歌机：B站直播弹幕点歌 + mpv 播放 + OBS 浏览器源面板",
   "scripts": {

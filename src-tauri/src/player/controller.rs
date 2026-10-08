@@ -537,7 +537,10 @@ impl PlayerController {
                     .set_paused(false)
                     .await
                     .map_err(|e| format!("继续播放失败：{e}"))?;
-                self.sync_paused(false);
+                // ⚠️ 用 `mark_resumed` 而不是 `sync_paused`：后者会被
+                // 「尚未开播就忽略 mpv 事件」的闸门挡掉，导致状态永远停在
+                // playing=false，界面按钮无法回到「暂停」。
+                self.mark_resumed();
             }
             return Ok(Some(item));
         }
@@ -691,7 +694,8 @@ impl PlayerController {
             if let Some(item) = existing {
                 if self.backend.status() == PlaybackStatus::Paused {
                     let _ = self.backend.set_paused(false).await;
-                    self.sync_paused(false);
+                    // 同上：这是用户意图驱动的恢复，必须绕过 mpv 事件闸门
+                    self.mark_resumed();
                     return Ok(Some(item));
                 }
                 if self.backend.status() == PlaybackStatus::Playing {
@@ -1773,6 +1777,25 @@ impl PlayerController {
         });
     }
 
+    /// **用户主动恢复播放**时更新状态（解除暂停 / 继续播放）。
+    ///
+    /// 与 [`Self::sync_paused`] 的区别：这是**用户意图**驱动的，不是 mpv 事件回灌，
+    /// 因此不能走那道「尚未开播就忽略」的闸门——否则状态永远停在
+    /// `playing=false / paused=false`，界面上就是「点了播放按钮却一直显示▶ 播放」。
+    ///
+    /// 实测场景：mpv 里已经加载好了文件但处于暂停，用户点「播放」，
+    /// 后端只调 `set_paused(false)`，闸门把随之而来的 `pause=false` 事件吃掉，
+    /// 于是按钮永远不会变成「暂停」，也就无法再次点击暂停。
+    fn mark_resumed(&self) {
+        self.playback_started
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.state.mutate(|s| {
+            s.player.playing = s.current.is_some();
+            s.player.paused = false;
+        });
+        self.state.broadcast_state();
+    }
+
     /// 跳转到指定位置（秒）。用于前端拖动进度条。
     ///
     /// 除了转发给 mpv，还要立刻把位置写进状态并广播：位置轮询器最长 2 秒才刷新
@@ -1794,7 +1817,8 @@ impl PlayerController {
         if let Err(err) = self.backend.set_paused(false).await {
             debug!(error = %err, "跳转后恢复播放失败（可能本来就没暂停）");
         }
-        self.sync_paused(false);
+        // 拖进度条同样属于用户意图驱动的恢复，用 `mark_resumed` 绕过事件闸门
+        self.mark_resumed();
         Ok(())
     }
 
@@ -2671,6 +2695,47 @@ mod tests {
             "当前仍应是空闲歌曲"
         );
         assert_eq!(state.read().queue.len(), 1, "点歌应留在队列里等待");
+    }
+
+    #[tokio::test]
+    async fn resume_from_paused_updates_playing_state() {
+        // 用户报告：点「播放」后按钮变「暂停」，再点一次恢复播放，
+        // 之后按钮**再也回不到「暂停」**——点了没反应。
+        //
+        // 根因：mpv 里文件已加载但处于暂停时，`resume_or_start` 走「解除暂停」分支，
+        // 只调 `backend.set_paused(false)` + `sync_paused(false)`，而后者被
+        // 「尚未开播就忽略 mpv 事件」的闸门挡掉，于是 `player.playing` 永远是 false，
+        // 界面按钮就一直显示「▶ 播放」。
+        // 现在该分支改用 `mark_resumed()` 显式写状态。
+        let state = state();
+        let backend = Arc::new(MockPlayer::new());
+        let controller = controller(&state, &backend, "resume-paused");
+        state.mutate(|s| {
+            s.idle.push(resolved_item("暂停中的歌"));
+        });
+
+        // 先播起来
+        let item = controller.play_idle_next().await.unwrap().unwrap();
+        assert!(state.read().player.playing, "开播后应是在播状态");
+
+        // 模拟「mpv 已加载但暂停」：后端进入 Paused，状态也置为暂停
+        backend.set_paused(true).await.unwrap();
+        state.mutate(|s| {
+            s.player.playing = false;
+            s.player.paused = true;
+        });
+        // 关键：这个标记必须是 false，才能复现闸门吃掉事件的情形
+        controller.playback_started.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // 用户点「播放」
+        let resumed = controller.resume_or_start().await.unwrap().unwrap();
+        assert_eq!(resumed.id, item.id, "应继续同一首");
+        let guard = state.read();
+        assert!(
+            guard.player.playing,
+            "解除暂停后 playing 必须为 true，否则界面按钮停在「▶ 播放」无法再点"
+        );
+        assert!(!guard.player.paused, "解除暂停后 paused 应为 false");
     }
 
     // ── 用户报告的确切场景（阶段 10d 回归）──────────────────────────────

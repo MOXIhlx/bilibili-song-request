@@ -114,6 +114,13 @@ pub fn find_mpv() -> Result<Located, String> {
 }
 
 /// 以 exe 目录为基准的候选路径。
+///
+/// 覆盖的摆放方式（实测最常见的三种）：
+///  - 把 `mpv.exe` 直接放在程序目录（或任意上层目录）
+///  - Tauri sidecar 布局：`binaries\mpv-<target-triple>.exe` / `binaries\mpv.exe`
+///  - **解压出来的整个 mpv 发行包**：`mpv\mpv.exe`
+///    （官方/shinchiro 的 7z 解压后就是这种：外层一个 `mpv\` 目录，
+///     里面有 `mpv.exe`、`d3dcompiler_43.dll`、`mpv-register.bat` 等）
 fn exe_relative_candidates(exe_dir: &Path) -> Vec<PathBuf> {
     let suffix = exe_suffix();
     let mut candidates = Vec::new();
@@ -129,6 +136,16 @@ fn exe_relative_candidates(exe_dir: &Path) -> Vec<PathBuf> {
             )),
         );
         candidates.push(current.join("binaries").join(format!("mpv{suffix}")));
+        // 解压出来的发行包：`mpv\mpv.exe`（以及少数包里多一层 installer\）
+        candidates.push(current.join("mpv").join(format!("mpv{suffix}")));
+        candidates.push(
+            current
+                .join("mpv")
+                .join("installer")
+                .join(format!("mpv{suffix}")),
+        );
+        // 有些第三方打包把可执行文件放 bin\
+        candidates.push(current.join("bin").join(format!("mpv{suffix}")));
         base = current.parent();
     }
     candidates
@@ -214,6 +231,30 @@ mod tests {
             "应包含 Tauri sidecar 命名 {expected:?}"
         );
         assert!(candidates.iter().any(|p| p.ends_with(format!("mpv{}", exe_suffix()))));
+    }
+
+    #[test]
+    fn candidates_find_extracted_mpv_folder() {
+        // 用户实测的摆放：把官方/shinchiro 的 mpv 7z 解压到程序目录旁边，
+        // 于是同级同时出现 `mpv\`（文件夹，内含 mpv.exe）与可能重复的其它文件。
+        // 早期只探 `current\mpv.exe` 与 `current\binaries\...`，**不探 `current\mpv\mpv.exe`**，
+        // 导致"明明装了 mpv 却报未检测到"。
+        let dir = PathBuf::from("/app");
+        let candidates = exe_relative_candidates(&dir);
+        let in_subfolder = dir.join("mpv").join(format!("mpv{}", exe_suffix()));
+        assert!(
+            candidates.contains(&in_subfolder),
+            "应包含解压包布局 {in_subfolder:?}"
+        );
+        // 少数包多一层 installer\
+        let nested = dir
+            .join("mpv")
+            .join("installer")
+            .join(format!("mpv{}", exe_suffix()));
+        assert!(candidates.contains(&nested), "应包含 mpv/installer/ 布局");
+        // 以及 bin\ 布局
+        let in_bin = dir.join("bin").join(format!("mpv{}", exe_suffix()));
+        assert!(candidates.contains(&in_bin), "应包含 bin/ 布局");
     }
 
     #[test]

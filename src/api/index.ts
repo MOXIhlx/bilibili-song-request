@@ -74,6 +74,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    /** 出错的接口路径（仅用于排障，不拼进 message）。 */
+    readonly path?: string,
   ) {
     super(message)
     this.name = 'ApiError'
@@ -106,7 +108,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(`无法连接本地服务 (${apiUrl(path)})：${(err as Error).message}`)
   }
   if (!res.ok) {
-    throw new ApiError(`请求 ${path} 失败`, res.status)
+    // ⚠️ 必须读响应体：后端所有失败都会写 `{"error": "..."}`，
+    // 里面是**可读的中文原因**（例如「空闲歌单里没有这个条目」）。
+    //
+    // 早期这里只拼了状态码（`请求 /api/xxx 失败`），于是真实原因被丢掉，
+    // 用户只能看到一个接口路径，完全无法定位——实测「点空闲歌单播放报错」
+    // 就是这样：界面显示「请求 api/idle/play」，而真正的原因是歌单已为空。
+    let detail = ''
+    try {
+      const text = await res.text()
+      if (text) {
+        try {
+          const parsed = JSON.parse(text) as { error?: unknown; notice?: unknown }
+          const fromBody = parsed.error ?? parsed.notice
+          if (typeof fromBody === 'string' && fromBody.trim()) detail = fromBody.trim()
+        } catch {
+          // 不是 JSON（例如 HTML 错误页）：直接截断原文，避免把整页 HTML 弹给用户
+          detail = text.length > 300 ? `${text.slice(0, 300)}…` : text
+        }
+      }
+    } catch {
+      // 读体失败就退化为只有状态码，至少不额外抛错
+    }
+    throw new ApiError(detail || `请求失败（HTTP ${res.status}）`, res.status, path)
   }
   if (res.status === 204) return undefined as T
   const data = (await res.json()) as unknown
