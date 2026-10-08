@@ -13,7 +13,6 @@ import { showMessage } from '@/stores/message'
 import {
   addBlacklistEntry,
   addIdleSong,
-  apiUrl,
   clearIdle,
   getBlacklist,
   getConfig,
@@ -1004,16 +1003,6 @@ watch(tab, (next) => {
   if (next === 'logs' && !requestLog.value.length) void refreshRequestLog()
 })
 
-/**
- * 综合面板地址（保留一个快捷预览入口）。
- *
- * 面板的样式参数、四个专注页地址与预览已移到「设置 → OBS 面板」
- * （`ObsPanel.vue`，路由 `/settings/obs`）：
- * 那些配置堆在这个标签页里会把弹幕/队列区挤下去。
- * 这里只留一个「快速预览」链接，用配置里的默认样式。
- */
-const panelUrl = computed(() => apiUrl('/panel'))
-
 /** 配置编辑副本，保存时整体提交。 */
 const draft = ref<Config | null>(null)
 /** 拉取配置是否失败（用于给出重试入口，而不是永远显示「加载中」）。 */
@@ -1477,11 +1466,6 @@ function formatTime(iso: string): string {
         用户反馈过「一进来就看见一大堆控制台的东西，很杂乱」。
       -->
 
-      <!-- 面板配置入口：内容在「设置 → OBS 面板」，这里只留链接 -->
-      <p class="panel-entry">
-        <RouterLink class="link" to="/settings/obs">OBS 面板设置 →</RouterLink>
-        <a class="link" :href="panelUrl" target="_blank" rel="noreferrer">预览综合面板</a>
-      </p>
     </section>
 
     <!-- ── 点歌队列 ─────────────────────────────────────────────── -->
@@ -1965,15 +1949,6 @@ button.danger {
 .collapse-summary .dim {
   font-size: 12px;
   color: var(--bsr-muted);
-}
-
-.panel-entry {
-  grid-column: 1 / -1;
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin: 0;
-  padding: 0 2px;
 }
 
 .card {

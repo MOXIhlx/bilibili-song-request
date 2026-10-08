@@ -78,8 +78,17 @@ function countOf(key: NavTabKey): number | null {
   return typeof n === 'number' && n > 0 ? n : null
 }
 
-/** 是否在「设置」下（用于右侧路由项高亮）。 */
-const onSettings = computed(() => route.path.startsWith('/settings'))
+/**
+ * 配置入口（与三个子标签一一对应）。
+ *
+ * 顺序按「改得多 → 改得少」：基础设置（规则/平台）→ OBS 面板（外观/地址）
+ * → 背景图库（上传素材）。
+ */
+const SETTINGS: Array<{ path: string; label: string }> = [
+  { path: '/settings', label: '设置' },
+  { path: '/settings/obs', label: 'OBS 面板' },
+  { path: '/settings/background', label: '背景图库' },
+]
 </script>
 
 <template>
@@ -101,10 +110,22 @@ const onSettings = computed(() => route.path.startsWith('/settings'))
 
     <span class="nav-sep" aria-hidden="true" />
 
-    <!-- 右：页级路由 -->
+    <!--
+      右：配置。三个入口**直接铺开**，不做二级菜单。
+      它们原本藏在设置页内部的子标签里，首页底部另外还留了两个链接
+      （「OBS 面板设置 →」「预览综合面板」）——位置低、几乎看不见。
+      用户反馈「为什么一定要在主页底部留两个，就不能直接把 OBS 面板跟设置一样
+      也放在上面吗」。现在统一到这一条导航里，底部的链接全部删除。
+    -->
     <div class="nav-group">
-      <RouterLink to="/settings" class="nav-item" :class="{ 'is-active': onSettings }">
-        设置
+      <RouterLink
+        v-for="s in SETTINGS"
+        :key="s.path"
+        :to="s.path"
+        class="nav-item"
+        :class="{ 'is-active': route.path === s.path }"
+      >
+        {{ s.label }}
       </RouterLink>
     </div>
 
