@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket};
-use axum::extract::{Path as AxumPath, Query, State, WebSocketUpgrade};
+use axum::extract::{DefaultBodyLimit, Path as AxumPath, Query, State, WebSocketUpgrade};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -529,6 +529,22 @@ pub fn build_router(ctx: Arc<ServerCtx>) -> Router {
         .route("/dashboard", get(page_dashboard))
         .route("/ws", get(ws_handler))
         .fallback(not_found)
+        /*
+         * 请求体上限。
+         *
+         * ⚠️ **必须显式设置**，否则会用 axum 的默认值 **2 MB**——背景图上传
+         * 会在进入 handler 之前就被拦掉，返回一个**没有响应体**的 413，
+         * 前端只能显示「上传背景图失败：HTTP 413」，用户完全看不出是尺寸问题。
+         *
+         * 实测（修复前）：600 KB 成功、2225 KB / 2922 KB / 5800 KB 全部 413。
+         * 手机照片动辄 3~5 MB，所以「小图也传不上去」是必然的。
+         *
+         * 这里放宽到 40 MB 给下面的业务校验留出空间：
+         *  - `api_panel_background`（上传）        自身限 32 MB
+         *  - `api_panel_background_save_edited`（编辑另存）自身限 24 MB
+         * 两层都拦，但**用户看到的是业务层那句带 MB 数与人话建议的提示**。
+         */
+        .layer(DefaultBodyLimit::max(40 * 1024 * 1024))
         .layer(cors)
         .layer(SetResponseHeaderLayer::overriding(
             header::CACHE_CONTROL,
@@ -1225,6 +1241,17 @@ pub struct BackgroundDeleteRequest {
 }
 
 /// `DELETE /api/panel/background` —— 删除已上传的背景图。
+///
+/// ## 删除是「移进回收目录」，不是永久删除
+/// 早期这里直接 `remove_file`，**不进回收站、无法撤销**：误删一张精心裁好的
+/// 背景图就永久没了（开发过程中真实发生过，用户素材因此丢失）。
+///
+/// 现在把文件移到 `backgrounds/.trash/` 下并加时间戳后缀：
+///  - 列表与 `/bg/` 都只扫 `backgrounds/*`（单层、白名单扩展名），
+///    所以回收目录里的文件**不会被当成图库内容**，也不会被路由取到；
+///  - 后悔了可以直接进这个目录把文件拷回来。
+///
+/// 回收目录不自动清理：背景图数量有限，留着比"悄悄删掉用户的后悔药"安全。
 async fn api_panel_background_delete(
     State(ctx): State<Arc<ServerCtx>>,
     Json(body): Json<BackgroundDeleteRequest>,
@@ -1235,7 +1262,21 @@ async fn api_panel_background_delete(
     if !path.is_file() {
         return Err(ApiError::not_found(format!("找不到图片 {name}")));
     }
-    std::fs::remove_file(&path).map_err(|e| ApiError::internal(format!("删除失败：{e}")))?;
+
+    // 移进回收目录（保留原文件名 + 时间戳，便于分辨与还原）
+    let trash = dir.join(".trash");
+    std::fs::create_dir_all(&trash)
+        .map_err(|e| ApiError::internal(format!("创建回收目录失败：{e}")))?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let trashed = trash.join(format!("{stamp}-{name}"));
+    std::fs::rename(&path, &trashed).map_err(|e| {
+        ApiError::internal(format!("删除失败（无法移入回收目录）：{e}"))
+    })?;
+    info!(
+        name = %name,
+        trash = %trashed.display(),
+        "背景图已移入回收目录（需要时可从这里拷回）"
+    );
 
     // 引用它的**所有样式**都要清空引用，避免面板指向一个不存在的文件
     let url = format!("/bg/{name}");
@@ -1313,15 +1354,24 @@ async fn api_panel_background(
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    const MAX_BYTES: usize = 8 * 1024 * 1024;
+    /*
+     * 上传上限 32 MB。
+     *
+     * 早期这里是 8 MB，但**根本走不到**：axum 的默认请求体上限是 2 MB，
+     * 超了就在路由层被拦成 413（且响应体为空）。现在路由层放宽到 40 MB，
+     * 这个检查才真正生效，并且能给出带 MB 数与人话建议的提示。
+     */
+    const MAX_BYTES: usize = 32 * 1024 * 1024;
     if body.is_empty() {
         return Err(ApiError::bad_request("图片内容为空"));
     }
     if body.len() > MAX_BYTES {
         return Err(ApiError::bad_request(format!(
-            "图片过大（{} 字节，上限 {} 字节）",
-            body.len(),
-            MAX_BYTES
+            "图片太大（{:.1} MB，上限 {} MB）。\
+             可以先用画图/截图工具缩小尺寸，或在「背景图库」里选一张图点「编辑」\
+             裁掉不需要的部分后再另存。",
+            body.len() as f64 / 1024.0 / 1024.0,
+            MAX_BYTES / 1024 / 1024
         )));
     }
 
@@ -1337,9 +1387,30 @@ async fn api_panel_background(
         t if t.starts_with("image/webp") => "webp",
         t if t.starts_with("image/gif") => "gif",
         other => {
-            return Err(ApiError::bad_request(format!(
-                "不支持的图片类型：{other}（支持 png/jpeg/webp/gif）"
-            )))
+            /*
+             * 浏览器没识别出类型时会发 `application/octet-stream`（或空）。
+             * 这时看扩展名兜底——总比让用户对着"不支持的图片类型"发呆好。
+             */
+            let name = headers
+                .get("x-file-name")
+                .and_then(|v| v.to_str().ok())
+                .map(decode_uri_component)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if name.ends_with(".png") {
+                "png"
+            } else if name.ends_with(".jpg") || name.ends_with(".jpeg") {
+                "jpg"
+            } else if name.ends_with(".webp") {
+                "webp"
+            } else if name.ends_with(".gif") {
+                "gif"
+            } else {
+                return Err(ApiError::bad_request(format!(
+                    "不支持的图片类型：{}（支持 png / jpeg / webp / gif）",
+                    if other.is_empty() { "未提供" } else { other }
+                )));
+            }
         }
     };
 

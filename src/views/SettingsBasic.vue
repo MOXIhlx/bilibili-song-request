@@ -14,11 +14,11 @@
  * 因此不会互相覆盖——只是改完这边不会实时反映到那边，切页时会重新取。
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import { RouterLink } from 'vue-router'
 import { getConfig } from '@/api'
 import { clonePlain } from '@/composables/panelParams'
 import { showMessage } from '@/stores/message'
 import { useAppStore } from '@/stores/app'
+import NavTabs from '@/components/NavTabs.vue'
 import type { Config } from '@/types'
 
 const store = useAppStore()
@@ -89,12 +89,13 @@ const ready = computed(() => draft.value !== null)
 
 <template>
   <div class="settings-basic">
-    <!-- 与其他两个子标签共用的导航条 -->
-    <nav class="sub-tabs">
-      <RouterLink to="/settings">基础</RouterLink>
-      <RouterLink to="/settings/obs">OBS 面板</RouterLink>
-      <RouterLink to="/settings/background">背景图库</RouterLink>
-    </nav>
+    <!--
+      统一导航（`components/NavTabs.vue`）：左边是控制台的面板内标签，
+      右边是「设置」。设置页自己没有面板内标签，所以 `model-value` 传 null。
+      顶栏不再有页级导航——早期两处重复，会出现「在设置页点『基础』跳回控制台」
+      这种自相矛盾的链接。
+    -->
+    <NavTabs :model-value="null" />
 
     <div class="page-head">
       <h2>基础设置</h2>
@@ -204,36 +205,6 @@ const ready = computed(() => draft.value !== null)
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-
-/* 与 ObsPanel.vue 的子标签样式保持一致（同一套页内导航） */
-.sub-tabs {
-  display: flex;
-  gap: 6px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--bsr-border);
-}
-
-.sub-tabs a {
-  padding: 5px 14px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  color: var(--bsr-muted);
-  font-size: 13px;
-  text-decoration: none;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-
-.sub-tabs a:hover {
-  background: var(--bsr-accent-soft);
-  color: var(--bsr-fg);
-}
-
-.sub-tabs a.router-link-active {
-  border-color: var(--bsr-accent);
-  background: var(--bsr-accent-soft);
-  color: var(--bsr-accent);
-  font-weight: 600;
 }
 
 .page-head {

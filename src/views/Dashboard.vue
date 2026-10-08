@@ -7,6 +7,7 @@
  * 因此失败时只在页面上提示错误，不阻塞界面。
  */
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import NavTabs from '@/components/NavTabs.vue'
 import { useAppStore } from '@/stores/app'
 import { showMessage } from '@/stores/message'
 import {
@@ -1115,33 +1116,17 @@ function formatTime(iso: string): string {
 
 <template>
   <div class="dashboard">
-    <div class="tabs">
-      <!--
-        标签按**用途**分组，中间用一条细分隔线分开：
-          左：日常操作（播放 / 队列 / 歌单 / 记录）——每天都会点
-          右：配置（黑名单 / 设置）——配一次就不动
-        这样一眼能看出哪些不用天天管，也是"别把配置和日常操作混在一起"的体现。
-      -->
-      <div class="tab-group">
-        <button :class="{ active: tab === 'live' }" @click="tab = 'live'">直播与播放</button>
-        <button :class="{ active: tab === 'queue' }" @click="tab = 'queue'">
-          点歌队列 <span class="badge">{{ store.queue.length }}</span>
-        </button>
-        <button :class="{ active: tab === 'idle' }" @click="tab = 'idle'">
-          空闲歌单 <span class="badge">{{ idle?.items.length ?? 0 }}</span>
-        </button>
-        <button :class="{ active: tab === 'logs' }" @click="tab = 'logs'">点歌日志</button>
-      </div>
-      <span class="tab-sep" aria-hidden="true" />
-      <div class="tab-group">
-        <button :class="{ active: tab === 'blacklist' }" @click="tab = 'blacklist'">
-          黑名单 <span v-if="blacklist.length" class="badge">{{ blacklist.length }}</span>
-        </button>
-      </div>
-      <button class="ghost refresh-btn" :disabled="store.loading" @click="store.refresh()">
-        刷新状态
-      </button>
-    </div>
+    <!--
+      导航统一由 NavTabs 渲染（顶栏不再有页级导航）。
+      左侧是面板内标签，右侧是「设置」路由 + 刷新按钮。
+    -->
+    <NavTabs
+      v-model="tab"
+      :counts="{ queue: store.queue.length, idle: idle?.items.length ?? 0, blacklist: blacklist.length }"
+      :refreshing="store.loading"
+      show-refresh
+      @refresh="store.refresh()"
+    />
 
     <!-- ── 直播与播放 ───────────────────────────────────────────── -->
     <section v-if="tab === 'live'" class="grid">

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 /**
- * 桌面窗口外壳：左侧导航 + 内容区。
- * 顶部显示与内嵌服务器的连接状态（WS 小圆点）。
+ * 桌面窗口外壳。
+ *
+ * 顶栏只留**品牌 + 连接状态**：页级导航已下放到各页面的标签栏
+ * （见 `components/NavTabs.vue`），避免同一功能出现两次。
  */
 import { onMounted, onUnmounted } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { RouterView } from 'vue-router'
 import { useAppStore } from '@/stores/app'
 import {
   collapseMessages,
@@ -15,7 +17,6 @@ import {
 } from '@/stores/message'
 
 const store = useAppStore()
-const route = useRoute()
 
 onMounted(() => {
   void store.bootstrap()
@@ -34,19 +35,14 @@ onUnmounted(() => {
         <span class="brand-version">{{ store.state?.version ?? '…' }}</span>
       </div>
 
-      <nav class="app-nav">
-        <RouterLink to="/dashboard" :class="{ active: route.path.startsWith('/dashboard') }">
-          控制台
-        </RouterLink>
-        <!--
-          「设置」取代了原来的「OBS 面板」一级入口。
-          OBS 面板本质是配置（配一次就不动），不该和控制台并列成导航项——
-          那样导航项多、用户一进来就看到一堆配置。
-        -->
-        <RouterLink to="/settings/obs" :class="{ active: route.path.startsWith('/settings') }">
-          设置
-        </RouterLink>
-      </nav>
+      <!--
+        ⚠️ 这里**不再放页级导航**。
+        早期顶栏有「控制台 / 设置」两个入口，页面里又有一排标签栏，
+        于是同一个功能出现两次、还会出现「在设置页里点『基础』跳回控制台」
+        这种自相矛盾的链接。
+        现在统一成一条导航：顶栏只留品牌与连接状态，导航全部由各页面
+        顶部那一条标签栏承担（见 `NavTabs.vue`）。
+      -->
 
       <div class="conn" :data-ok="store.connected">
         <span class="conn-dot" />
@@ -136,30 +132,12 @@ onUnmounted(() => {
   color: var(--bsr-muted);
 }
 
-.app-nav {
-  display: flex;
-  gap: 6px;
-  margin-left: auto;
-}
-
-.app-nav a {
-  padding: 6px 14px;
-  border-radius: 6px;
-  color: var(--bsr-muted);
-  text-decoration: none;
-  font-size: 13px;
-}
-
-.app-nav a.active,
-.app-nav a:hover {
-  background: var(--bsr-accent-soft);
-  color: var(--bsr-fg);
-}
-
 .conn {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* 顶栏只剩品牌 + 连接状态，连接状态推到最右 */
+  margin-left: auto;
   font-size: 12px;
   color: var(--bsr-muted);
 }

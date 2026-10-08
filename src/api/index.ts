@@ -518,19 +518,51 @@ export function downloadBackground(url: string, name: string): void {
  * 图片由后端存到程序配置目录，返回可直接给 OBS 用的站内地址（`/bg/xxx`）。
  * 为什么不转 base64 塞进 URL：大图会把地址撑到几千字符，OBS 可能拒绝。
  */
-export async function uploadBackground(file: File): Promise<string> {  const res = await fetch(apiUrl('/api/panel/background'), {
+/**
+ * 上传背景图，返回可从 OBS 访问的 `/bg/<name>` 地址。
+ *
+ * 两个容易踩的点：
+ *  1. **文件名要 URL 编码**后放进 `X-File-Name`：HTTP 头只能是 ISO-8859-1，
+ *     中文文件名直接塞会让浏览器拒绝发送。后端拿它做类型兜底
+ *     （有些文件浏览器给不出 `file.type`，那时只能看扩展名）。
+ *  2. 请求体上限在**路由层**（40 MB），超过的话服务端返回的 413 响应体是空的，
+ *     所以这里要自己给出可读的提示——不然用户只看到「HTTP 413」。
+ */
+export async function uploadBackground(file: File): Promise<string> {
+  const res = await fetch(apiUrl('/api/panel/background'), {
     method: 'POST',
-    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+    headers: {
+      'Content-Type': file.type || 'application/octet-stream',
+      'X-File-Name': encodeURIComponent(file.name),
+    },
     body: file,
   })
   if (!res.ok) {
-    // 后端的错误信息是可读中文，优先透出
+    const mb = (file.size / 1024 / 1024).toFixed(1)
+    /*
+     * 先按**文本**读，再尝试当 JSON 解析。
+     *
+     * ⚠️ 不能直接 `res.json()`：路由层的 413 响应体是**纯文本**
+     * （`Failed to buffer the request body: length limit exceeded`，
+     * 由 tower-http 生成，不是我们的 JSON），直接解析会抛异常，
+     * 于是那句英文和状态码都被丢掉，用户只看到「上传背景图失败：HTTP 413」。
+     */
     let detail = `HTTP ${res.status}`
     try {
-      const body = (await res.json()) as { error?: string }
-      if (body.error) detail = body.error
+      const text = await res.text()
+      if (text) {
+        try {
+          const body = JSON.parse(text) as { error?: string }
+          detail = body.error ?? text
+        } catch {
+          detail = text
+        }
+      }
     } catch {
-      // 非 JSON，保持 HTTP 码
+      // 连文本都读不到，保持状态码
+    }
+    if (res.status === 413) {
+      detail = `${detail}；图片共 ${mb} MB，超过上限（32 MB）`
     }
     throw new ApiError(`上传背景图失败：${detail}`, res.status)
   }

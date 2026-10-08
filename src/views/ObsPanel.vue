@@ -15,7 +15,7 @@
  * 这是与早期「每个源各自带一串 URL 参数」最大的区别。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { RouterLink, useRoute } from 'vue-router'
+import { useRoute } from 'vue-router'
 import {
   apiUrl,
   createPanelStyle,
@@ -32,6 +32,7 @@ import {
   uploadBackground,
   type BackgroundItem,
 } from '@/api'
+import NavTabs from '@/components/NavTabs.vue'
 import { clonePlain } from '@/composables/panelParams'
 import BackgroundEditor from '@/components/BackgroundEditor.vue'
 import { showMessage } from '@/stores/message'
@@ -1121,11 +1122,8 @@ async function copyAll(): Promise<void> {
       由 `route.path` 决定是否只显示背景图部分——见下方 `showBackgroundsOnly`。
       「基础」暂时落在控制台的设置标签（避免出现两个改配置的入口）。
     -->
-    <nav class="sub-tabs">
-      <RouterLink to="/dashboard">基础</RouterLink>
-      <RouterLink to="/settings/obs">OBS 面板</RouterLink>
-      <RouterLink to="/settings/background">背景图库</RouterLink>
-    </nav>
+    <!-- 统一导航：左边控制台标签，右边「设置」（顶栏已不再有页级导航） -->
+    <NavTabs :model-value="null" />
 
     <div class="page-head">
       <div>
@@ -1155,6 +1153,7 @@ async function copyAll(): Promise<void> {
       -->
       <div class="editor-layout">
         <div class="editor-main">
+      <template v-if="!showBackgroundsOnly">
       <!-- ── 样式列表（命名样式）────────────────────────────────────── -->
       <section class="card">
         <div class="card-head">
@@ -1324,6 +1323,7 @@ async function copyAll(): Promise<void> {
         </p>
       </section>
 
+      </template>
       <!-- ── 背景图（阶段 9，阶段 10b 改为下拉选择 + 预览）────────── -->
       <section class="card">
         <div class="card-head">
@@ -1414,6 +1414,7 @@ async function copyAll(): Promise<void> {
         </div>
       </section>
 
+      <template v-if="!showBackgroundsOnly">
       <!-- ── 地址与参数 ───────────────────────────────────────────── -->
       <section class="card">
         <div class="card-head">
@@ -1453,6 +1454,7 @@ async function copyAll(): Promise<void> {
         </ul>
       </section>
 
+      </template>
       <!--
         这里曾有一个「高级：地址参数」编辑器（手写 ?color=/?theme= 之类的覆盖）。
         命名样式上线后，面板地址**只写 `?style=<id>`**，不再携带任何外观参数——
@@ -1461,6 +1463,7 @@ async function copyAll(): Promise<void> {
         所以整块移除。要改外观请直接改上面的样式，然后「保存样式」。
       -->
 
+      <template v-if="!showBackgroundsOnly">
       <!-- ── 面板启停（阶段 9）────────────────────────────────────── -->
       <section class="card">
         <h3>要使用哪些面板</h3>
@@ -1476,11 +1479,17 @@ async function copyAll(): Promise<void> {
           </label>
         </div>
       </section>
+      </template>
         </div>
         <!-- /.editor-main -->
 
-        <!-- ── 预览（吸附右栏）──────────────────────────────────────── -->
-        <aside class="editor-aside">
+        <!--
+          ── 预览（吸附右栏）──────────────────────────────────────────
+          ⚠️ 只在「OBS 面板」子标签显示。
+          「背景图库」页只管上传/裁剪/删除图片，那里放一份面板预览没有意义，
+          还会把图片网格挤窄。这与需求一致：双栏吸附预览属于 OBS 面板页。
+        -->
+        <aside v-if="!showBackgroundsOnly" class="editor-aside">
           <section class="card preview-card">
             <div class="card-head">
               <h3>预览 · {{ previewLabel }}</h3>
@@ -1700,40 +1709,6 @@ async function copyAll(): Promise<void> {
   gap: 14px;
 }
 
-/*
- * 设置页的子标签。
- * 与主标签（控制台里的那些）刻意做成不同样式：这是**页内**导航，
- * 视觉上更轻，避免和顶部主导航混淆。
- */
-.sub-tabs {
-  display: flex;
-  gap: 6px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--bsr-border);
-}
-
-.sub-tabs a {
-  padding: 5px 14px;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  color: var(--bsr-muted);
-  font-size: 13px;
-  text-decoration: none;
-  transition: background 0.12s ease, color 0.12s ease;
-}
-
-.sub-tabs a:hover {
-  background: var(--bsr-accent-soft);
-  color: var(--bsr-fg);
-}
-
-.sub-tabs a.router-link-active {
-  border-color: var(--bsr-accent);
-  background: var(--bsr-accent-soft);
-  color: var(--bsr-accent);
-  font-weight: 600;
-}
-
 /* ── 双栏：左编辑 / 右吸附预览 ─────────────────────────────────────────── */
 
 .editor-layout {
@@ -1742,6 +1717,14 @@ async function copyAll(): Promise<void> {
   grid-template-columns: minmax(0, 1fr) 380px;
   gap: 16px;
   align-items: start;
+}
+
+/*
+ * 「背景图库」页没有右栏预览，第三列空着会把图片网格挤窄 —— 改成单栏。
+ * 用 `:has()` 按"有没有右栏"来决定，比再传一个 class 更不容易忘记同步。
+ */
+.editor-layout:not(:has(.editor-aside)) {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .editor-main {
