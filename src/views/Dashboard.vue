@@ -1443,7 +1443,10 @@ function formatTime(iso: string): string {
             <span class="dm-text">{{ d.text }}</span>
           </li>
         </ul>
-        <p v-else class="empty">暂无弹幕。连接 B 站身份码后这里会实时滚动，也可以用上面的「链路自测」注入。</p>
+        <p v-else class="empty">
+          暂无弹幕。连接 B 站身份码后这里会实时滚动。
+          想验证链路可以用「设置 → 基础」页的链路自测注入一条。
+        </p>
       </article>
 
       <article class="card">
@@ -1484,8 +1487,9 @@ function formatTime(iso: string): string {
       </article>
 
       <!--
-        链路自测放在**最底部**：它只是排障工具，放在顶部会挤掉真正要看的内容
-        （用户反馈「在下面看不清顶部的报错提示」，顶部越少干扰越好）。
+        「链路自测」已移到「设置 → 基础」页（`SettingsBasic.vue`）。
+        它只是排障工具，摆在主播面前只会让首屏更杂乱——
+        用户反馈过「一进来就看见一大堆控制台的东西，很杂乱」。
       -->
 
       <!-- 面板配置入口：内容在「设置 → OBS 面板」，这里只留链接 -->
