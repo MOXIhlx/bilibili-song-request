@@ -562,11 +562,19 @@ function makeAllTransparent(): void {
  * 一次套用，而不是让用户在参数行里逐项试。预设只写地址参数，
  * 不动默认样式（默认样式要靠「保存默认样式」按钮才落盘）。
  */
+/**
+ * 面板预设。
+ *
+ * ## 字段名与样式字段一一对应
+ * `theme` / `bg` / `color` / `barColor` / `fg` / `surface` / `track` 就是
+ * `PanelStyleConfig` 里的字段名（`barColor` 与 `fg` 已是同形，`bar_color`
+ * 用驼峰在这里对照）。这让我们可以直接把预设写进 `draft`。
+ */
 interface PanelPreset {
   key: string
   label: string
   desc: string
-  /** 地址参数：值 `null` = 移除该参数（回到默认）。 */
+  /** 样式字段的值；`null` = 回到"跟随主色/自动"（对应后端空串）。 */
   params: Partial<Record<ParamName, string | null>>
 }
 
@@ -615,34 +623,59 @@ const PRESETS: PanelPreset[] = [
   },
 ]
 
-/** 当前套用的是哪个预设（参数与预设完全一致时高亮）。 */
+/**
+ * `ParamName` → `PanelStyleConfig` 字段名的对照。
+ *
+ * 大部分同名，只有 `barColor` 在样式里叫 `bar_color`（后端是 snake_case）。
+ */
+const PARAM_TO_FIELD: Partial<Record<ParamName, keyof PanelStyleConfig>> = {
+  barColor: 'bar_color',
+}
+
+/**
+ * 当前套用的是哪个预设（样式与预设完全一致时高亮）。
+ *
+ * ⚠️ 原来这里比的是 `paramRows`——那套地址参数已是死代码，
+ * 所以高亮**永远不会亮**。现在改成比 `draft` 的真实字段。
+ */
 const activePreset = computed(() => {
-  const current = new Map(paramRows.value.map((r) => [r.name, r.value.trim()]))
+  const d = draft.value
+  if (!d) return null
   return (
     PRESETS.find((p) =>
       Object.entries(p.params).every(([name, value]) => {
-        const cur = current.get(name as ParamName) ?? ''
-        if (value === null) return cur === '' || cur === '__default__'
+        const field = PARAM_TO_FIELD[name as ParamName] ?? (name as keyof PanelStyleConfig)
+        const cur = String(d[field] ?? '').trim()
+        // null 表示"跟随主色/自动"，后端用空串表示
+        if (value === null) return cur === ''
         return cur === value
       }),
     )?.key ?? null
   )
 })
 
-/** 套用预设：把这些参数写进地址参数行（`null` 表示移除）。 */
+/**
+ * 套用预设：直接写进**当前样式草稿**。
+ *
+ * ## ⚠️ 这里曾经是个真 bug
+ * 早期这个函数只往 `paramRows` 里写——那是**旧 URL 参数系统**的遗留物。
+ * 自从样式改成命名样式（地址里只带 `?style=<id>`）之后，
+ * **已经没有任何代码读 `paramRows` 了**，所以点预设只是改了一个没人看的
+ * 数组，界面上毫无变化；而按钮还会弹「已套用「深色」」的提示，
+ * 让这个 bug 更具欺骗性（用户反馈「不知道有什么用，似乎没有效果」）。
+ *
+ * 现在直接改 `draft`，因此：
+ *  - 右侧预览**立刻**跟着变（本地渲染，见 `PanelPreview.vue`）；
+ *  - 点「保存样式」后落盘，所有引用这套样式的 OBS 源一起生效。
+ */
 function applyPreset(preset: PanelPreset): void {
+  if (!draft.value) return
   for (const [name, value] of Object.entries(preset.params)) {
-    const paramName = name as ParamName
-    const rows = paramRows.value.filter((r) => r.name === paramName)
-    if (value === null) {
-      paramRows.value = paramRows.value.filter((r) => r.name !== paramName)
-      continue
-    }
-    if (rows.length) {
-      rows[0].value = value
-    } else {
-      paramRows.value.push(makeRow(paramName, value))
-    }
+    const field = PARAM_TO_FIELD[name as ParamName] ?? (name as keyof PanelStyleConfig)
+    // null → 空串，表示"跟随主色/自动"（与后端约定一致）
+    const next = value === null ? '' : value
+    // 只赋值字符串字段；这里用到的字段在样式里都是 string 类型
+    ;(draft.value as unknown as Record<string, unknown>)[field] = next
   }
 }
 
@@ -700,15 +733,29 @@ function applyStrokePreset(width: number): void {
   draft.value.text_stroke_width = width
 }
 
-/** 颜色项的界面元数据（顺序即界面顺序：最常调的排前面）。 */
+/**
+ * 颜色项的界面元数据。
+ *
+ * ## 顺序即界面顺序
+ * 按「常调程度」排，**主色第一**——它一处改全局（队列高亮、歌词当前行、
+ * 弹幕用户名），是最常动的；早期它排在第二，反而把「歌名颜色」摆在首位。
+ *
+ * 之后的次序按用途分组：
+ *   主色 → 文字三兄弟（字体色 / 歌名 / 描边，都跟可读性有关）
+ *        → 进度条两项 → 卡片底色（最少动）
+ *
+ * ## `hint` 不再渲染在项下面
+ * 原来每个颜色项下面都有一行小字说明，纵向把整块拉得很高、也显得杂乱。
+ * 现在改成**悬停提示**（`title`），信息保留但不占版面。
+ */
 const COLOR_ITEMS: Array<{ field: ColorField; label: string; hint: string }> = [
-  { field: 'titleColor', label: '歌名颜色', hint: '留空即跟随主色（只影响歌名）' },
-  { field: 'color', label: '主色', hint: '队列高亮、歌词当前行、弹幕用户名' },
+  { field: 'color', label: '主色', hint: '队列高亮、歌词当前行、弹幕用户名。改这一处即可换整体色调' },
+  { field: 'fg', label: '字体色', hint: '歌手、点歌人、时间等正文颜色' },
+  { field: 'titleColor', label: '歌名颜色', hint: '留空即跟随主色，只影响歌名' },
+  { field: 'strokeColor', label: '描边颜色', hint: '留空即按字体色自动选深浅' },
   { field: 'barColor', label: '进度条色', hint: '留空即跟随主色' },
-  { field: 'fg', label: '字体色', hint: '歌手、点歌人、时间等正文' },
-  { field: 'surface', label: '卡片底色', hint: 'transparent = 不要底色' },
-  { field: 'track', label: '进度条轨道', hint: 'transparent = 不要轨道' },
-  { field: 'strokeColor', label: '描边颜色', hint: '留空即按字体色自动选' },
+  { field: 'track', label: '进度条轨道', hint: '留空或 transparent = 不要轨道' },
+  { field: 'surface', label: '卡片底色', hint: '留空或 transparent = 不要底色，直接叠在画面上' },
 ]
 
 /**
@@ -772,14 +819,17 @@ const bgImageInput = ref('')
 const backgrounds = ref<BackgroundItem[]>([])
 const backgroundsLoading = ref(false)
 
-/**
- * 是否把背景图写进生成的面板地址。
+/*
+ * 这里原本有一个 `includeBgInUrls` 开关（"是否把背景图写进面板地址"），
+ * 连同界面上的「✓ 地址已带背景图」按钮。**已删除**，原因：
  *
- * 默认开启：用户上传/选中背景图后，期望「地址里就带着它」，
- * 而不是再去「地址参数」里手动加一条 `bgImage`——
- * 早期就是这样，导致**选了背景图但地址里没有、面板上看不到效果**。
+ *  - 它是个**无效控件**：有声明、有 @click 切换，但**没有任何地方读它**，
+ *    `urlFor()` 只写 `style=<id>` 与可选的 `scale`。点它只会让按钮文字
+ *    在两个状态间跳，地址一点变化都没有；
+ *  - 它描述的功能在命名样式体系下**已不存在**：背景图现在是样式的
+ *    `bg_image` 字段，地址里只带 `style=<id>`，背景图自然跟着样式走，
+ *    根本不存在"要不要写进地址"这个选择。
  */
-const includeBgInUrls = ref(true)
 
 /** 把 `/bg/x.jpg` 这类相对地址补成绝对地址（预览用，避免跨源 404）。 */
 function absoluteBg(url: string | null): string {
@@ -1349,10 +1399,8 @@ async function copyAll(): Promise<void> {
             </button>
           </div>
         </div>
-        <p class="dim">
-          每套样式是一整套外观。面板地址里只写 <code>?style=&lt;id&gt;</code>，
-          所以在这里改一处，所有用这套样式的 OBS 浏览器源一起生效。
-        </p>
+        <!-- 说明只留一句；"为什么只写 ?style=" 这类设计理由不占版面 -->
+        <p class="dim">改一套样式，所有引用它的 OBS 源一起生效。</p>
         <ul class="style-list">
           <li
             v-for="s in styles"
@@ -1422,7 +1470,12 @@ async function copyAll(): Promise<void> {
 
         <h4>颜色</h4>
         <div class="color-grid">
-          <label v-for="c in COLOR_ITEMS" :key="c.field" class="color-item">
+          <!--
+            颜色项。
+            `hint` 走 `title`（悬停提示），**不再渲在项下面**——每个项下面挂一行
+            小字会把整块拉得很高、也显得杂乱。悬停即可看到同样的信息。
+          -->
+          <label v-for="c in COLOR_ITEMS" :key="c.field" class="color-item" :title="c.hint">
             <span class="color-item-head">
               {{ c.label }}
               <button
@@ -1440,7 +1493,6 @@ async function copyAll(): Promise<void> {
               />
               <span class="mono">{{ colorValue(c.field) }}</span>
             </span>
-            <span class="dim">{{ c.hint }}</span>
           </label>
         </div>
         <p v-if="fgConflict" class="warn">
@@ -1449,10 +1501,27 @@ async function copyAll(): Promise<void> {
           深色主题建议用浅色字，浅色主题建议用深色字。
         </p>
 
-        <!-- 字体色单独给一行「用主题推荐色」，避免手调出看不见的组合 -->
+        <!--
+          快捷操作。按钮文案刻意只用 3~4 个字——原来分别是
+          「字体色用主题推荐值（#f2f2f2）」和「全部透明（只留文字与进度条）」，
+          把色值和整句解释都塞进了按钮，一眼看不出是干什么的。
+          解释改到 title（悬停可见）。
+        -->
         <div class="controls">
-          <button class="ghost" @click="setColor('fg', themeFg)">字体色用主题推荐值（{{ themeFg }}）</button>
-          <button class="ghost" @click="makeAllTransparent()">全部透明（只留文字与进度条）</button>
+          <button
+            class="ghost"
+            :title="`把字体色设为当前主题的推荐值（${themeFg}），避免手调出看不清的组合`"
+            @click="setColor('fg', themeFg)"
+          >
+            推荐字体色
+          </button>
+          <button
+            class="ghost"
+            title="把卡片底色与进度条轨道都设为透明，只留下文字和进度条"
+            @click="makeAllTransparent()"
+          >
+            全部透明
+          </button>
         </div>
       </section>
 
@@ -1464,10 +1533,7 @@ async function copyAll(): Promise<void> {
             <button class="ghost" :disabled="!ready" @click="resetTypography()">恢复默认</button>
           </div>
         </div>
-        <p class="dim">
-          面板要叠在任意背景图或直播画面上，浅色字压在浅色区域会糊掉——
-          描边是最省事的可读性保障。宽度 0 就是不描边。
-        </p>
+        <p class="dim">叠在画面上时加描边更清楚；宽度 0 即不描边。</p>
 
         <h4>字重</h4>
         <div class="fields">
@@ -1562,17 +1628,28 @@ async function copyAll(): Promise<void> {
               @change="syncStyleParam('limit', String(draft.limit))"
             />
           </label>
-          <label class="check">
+          <label
+            class="check"
+            :title="
+              draft.layout === 'compact'
+                ? '精简单行布局本身不显示歌词，这一项当前不起作用'
+                : '关掉后面板上整个歌词区都不渲染'
+            "
+          >
             <input
               type="checkbox"
               v-model="draft.show_lyrics"
+              :disabled="draft.layout === 'compact'"
               @change="syncStyleParam('showLyrics', draft.show_lyrics ? 'true' : 'false')"
             /> 显示歌词
+            <!--
+              精简单行布局下这个开关**必然无效**——`PanelView.vue` 里判定是
+              `showLyrics && layout !== 'compact'`。不提示的话用户会以为功能坏了
+              （用户反馈「我不知道这个显示歌词有什么用」正是这个原因）。
+            -->
+            <span v-if="draft.layout === 'compact'" class="dim">（精简单行不显示歌词）</span>
           </label>
         </div>
-        <p class="dim">
-          这些会同时写进面板地址与默认样式。地址里的值优先，所以每个 OBS 浏览器源可以各调各的。
-        </p>
       </section>
 
       </template>
@@ -1581,14 +1658,6 @@ async function copyAll(): Promise<void> {
         <div class="card-head">
           <h3>背景图</h3>
           <div class="controls">
-            <button
-              v-if="draft.bg_image"
-              :class="{ active: includeBgInUrls }"
-              :title="includeBgInUrls ? '地址里已带 bgImage 参数' : '把背景图写进面板地址'"
-              @click="includeBgInUrls = !includeBgInUrls"
-            >
-              {{ includeBgInUrls ? '✓ 地址已带背景图' : '让地址带上背景图' }}
-            </button>
           </div>
         </div>
         <div class="fields">
@@ -1638,10 +1707,7 @@ async function copyAll(): Promise<void> {
             @click="setBgOpacity('1')"
           >✕</button>
         </div>
-        <p class="dim">
-          只影响背景图，不影响文字。调淡可以当底纹用，让面板上的字更清楚。
-          <template v-if="!draft.bg_image">（当前没有选背景图）</template>
-        </p>
+        <p v-if="!draft.bg_image" class="dim">（当前没有选背景图）</p>
 
         <h4>图片库</h4>
         <div v-if="backgrounds.length" class="bg-grid">
@@ -1720,7 +1786,6 @@ async function copyAll(): Promise<void> {
                 {{ copiedKey === p.key ? '已复制' : '复制' }}
               </button>
               <a class="link" :href="p.url" target="_blank" rel="noreferrer">新窗口打开</a>
-              <button class="ghost" @click="previewKey = p.key">在下方预览</button>
               <label class="inline-num">
                 字号倍率
                 <input
@@ -1750,10 +1815,7 @@ async function copyAll(): Promise<void> {
       <!-- ── 面板启停（阶段 9）────────────────────────────────────── -->
       <section class="card">
         <h3>要使用哪些面板</h3>
-        <p class="dim">
-          只影响下面地址列表里显示哪几个。OBS 里想要哪个源都可以直接加，
-          这里不打勾也不会被禁用。
-        </p>
+        <p class="dim">只影响下面列出哪几个地址，不会禁用任何面板。</p>
         <div class="fields">
           <label v-for="p in PANEL_LIST" :key="p.key" class="check">
             <input type="checkbox" v-model="enabledPanels[p.key]" />
@@ -2045,6 +2107,31 @@ async function copyAll(): Promise<void> {
   gap: 6px;
 }
 
+/*
+ * 预览上方的面板切换按钮。
+ *
+ * ⚠️ 以前这里**一条基础样式都没写**（只有下面那条 `.active`），所以按钮
+ * 退回浏览器默认外观（灰底立体边框），和整套粉白主题明显不搭。
+ * 根因是老问题：本文件里按钮的基础样式都挂在 `.controls button` 这类
+ * 选择器上，不在其中的按钮就会"裸奔"。这里补齐。
+ */
+.preview-tabs button {
+  padding: 3px 10px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 6px;
+  background: var(--bsr-bg-elevated);
+  color: var(--bsr-fg);
+  font-size: 11.5px;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.preview-tabs button:hover {
+  border-color: var(--bsr-accent);
+  background: var(--bsr-accent-soft);
+}
+
 .preview-tabs button.active {
   border-color: var(--bsr-accent);
   color: var(--bsr-accent);
@@ -2182,10 +2269,18 @@ async function copyAll(): Promise<void> {
 /*
  * 页头（标题 + 「重置 / 保存样式」）。
  *
- * `position: sticky` 让它**滚动时固定在顶部**——这套设置表单很长，
- * 改了半天的样式再滚回页顶去点保存很别扭。用户明确要求吸顶。
+ * ## 为什么吸顶
+ * 这套设置表单很长，改了半天的样式再滚回页顶去点保存很别扭。
  *
- * `top: 0` + 不透明底色：滚动时下面的内容会从它底下经过，没有底色会叠字。
+ * ## 为什么是"半透明 + 模糊"而不是实心底色
+ * 第一版用了不透明底色（`background: var(--bsr-bg)`），结果滚轮往下时
+ * 下面的卡片从它底下经过，被**整块盖住**——用户反馈「这一条挡住我往下滚动的界面」。
+ * 实心底色让吸顶栏变成一堵墙。
+ *
+ * 现在改为半透明 + `backdrop-filter` 模糊：底下的内容仍能**透过来看见**，
+ * 同时文字保持可读。再配一条下边框，滚动时能看出"这里有一条浮层"。
+ * 另外把内边距压紧、标题缩小，尽量少占高度。
+ *
  * `z-index` 要高于卡片（卡片没有 z-index，默认 0）。
  */
 .page-head {
@@ -2193,18 +2288,21 @@ async function copyAll(): Promise<void> {
   top: 0;
   z-index: 20;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  margin: -4px 0 0;
-  padding: 10px 0;
-  background: var(--bsr-bg);
+  margin: 0 0 4px;
+  padding: 6px 0;
+  /* 半透明：内容能透出来，不再是"一堵墙" */
+  background: color-mix(in srgb, var(--bsr-bg) 78%, transparent);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--bsr-border);
 }
 
 .page-head h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 15px;
 }
 
 .card {
