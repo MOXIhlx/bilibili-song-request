@@ -296,6 +296,9 @@ const DEFAULT_PANEL = {
   bg_image: null,
   bg_opacity: 1,
   bg_position: null,
+  canvas_w: null,
+  canvas_h: null,
+  preview_width: null,
   font_size: 16,
   scale: 1,
   limit: 8,
@@ -935,12 +938,16 @@ function setBgPosition(value: string): void {
 }
 
 /**
- * 取景时用的面板比例。
+ * 取景框用的比例 = 当前画布比例。
  *
- * 面板画布固定按 `960×540`（16:9）渲染，所以取景框也必须用同一比例——
- * 否则用户在这个框里对好的位置，到 OBS 里会因为容器比例不同而变样。
+ * ⚠️ 必须与画布尺寸一致（`previewCanvasW / previewCanvasH`）：
+ * `cover` 的裁切完全由容器比例决定，取景框若用别的比例，
+ * 用户在这里对好的位置到 OBS 里就会变样。
+ *
+ * 早期这里写死 `16/9`——在画布尺寸可配置之前还算对，
+ * 现在必须跟着画布走。
  */
-const panAspect = 16 / 9
+const panAspect = computed(() => previewCanvasW.value / previewCanvasH.value)
 
 /**
  * 取景弹窗里那块"实际效果"预览的缩放比。
@@ -1317,62 +1324,199 @@ const previewLabel = computed(() => {
 // ── 预览（本地渲染，不用 iframe）──────────────────────────────────────
 
 /**
- * 预览容器尺寸。
+ * 预览**可用空间**。
  *
- * 面板按固定画布尺寸渲染，再等比缩放进来，所以这里只需要量出容器大小。
+ * ## ⚠️ 必须量一个"不受缩放影响"的元素
+ * 早期这里量的就是 `.preview-frame` 本身，而那个元素的宽高是由**算出来的
+ * 缩放比**设的 —— 于是形成循环依赖：量到高 240 → 算出比例 0.4 →
+ * 把高度设成 240 → 再量还是 240，比例永远卡在 0.4 上，画布再小也不会放大。
+ *
+ * 现在改成量一个纯占位、尺寸只由栏宽决定的包装层，
+ * 并把**限高**交给 CSS 的 `max-height`（不参与比例计算）。
  */
 const previewBoxEl = ref<HTMLElement | null>(null)
 const previewBoxSize = ref({ w: 0, h: 0 })
 
 let previewRO: ResizeObserver | null = null
 
-onMounted(() => {
-  const el = previewBoxEl.value
-  if (!el) return
-  const sync = () => {
-    previewBoxSize.value = { w: el.clientWidth, h: el.clientHeight }
-  }
-  sync()
-  previewRO = new ResizeObserver(sync)
-  previewRO.observe(el)
-})
+/**
+ * 量可用宽度。
+ *
+ * ## ⚠️ 必须用 `watch` 而不是 `onMounted`
+ * 这个元素在 `v-if="ready && draft"` 里面，而配置是**异步**加载的——
+ * 组件挂载那一刻它还**不存在**，`previewBoxEl.value` 是 `null`，
+ * 于是 `onMounted` 里直接 `return`，ResizeObserver 从来没被挂上，
+ * `previewBoxSize` 永远是 `{ w: 0 }`。
+ *
+ * 后果很隐蔽：`previewScale` 每次都走兜底分支返回写死的 `0.4`，
+ * 画布再小也不会放大（实测 400×600 本该是 1.0，却一直是 0.4）。
+ * 而 1920×1080 恰好正确值是 0.4，所以**看起来一切正常**，掩盖了这个 bug。
+ *
+ * `flush: 'post'` 保证在 DOM 更新后再量。
+ */
+watch(
+  previewBoxEl,
+  (el, _old, onCleanup) => {
+    previewRO?.disconnect()
+    previewRO = null
+    if (!el) return
+    const sync = () => {
+      previewBoxSize.value = { w: el.clientWidth, h: el.clientHeight }
+    }
+    sync()
+    previewRO = new ResizeObserver(sync)
+    previewRO.observe(el)
+    onCleanup(() => {
+      previewRO?.disconnect()
+      previewRO = null
+    })
+  },
+  { flush: 'post' },
+)
 
 onBeforeUnmount(() => {
   previewRO?.disconnect()
 })
 
-/** 预览用的画布尺寸（与 `PanelPreview.vue` 里的常量一致）。 */
-const PREVIEW_CANVAS_W = 960
-const PREVIEW_CANVAS_H = 540
-
 /**
  * 「1:1 实际大小」开关。
  *
  * ## 为什么需要它
- * 右栏只有约 350px 宽，等比缩略后缩放比约 0.36，字自然小。
- * **但那正是真实 OBS 源里的样子**——直接把预览的字放大，会让预览骗人
- * （预览里看着刚好，OBS 里小一半）。
+ * 预览栏通常只有三四百像素宽，等比缩略后字很小。**但那正是真实 OBS 源里
+ * 的样子**——把预览的字放大只会让它骗人（预览里看着刚好，OBS 里小一半）。
  *
- * 所以保留"等比缩略"作为默认（版式真实），另给一个 1:1 档：
- * 按 960×540 真实渲染、超出容器就滚动。这样"看得清"与"等于 OBS"
- * 可以同时成立，用户自己切换，不用猜哪个是真的。
+ * 所以默认走等比（版式真实），另给一个 1:1 档：按画布真实尺寸渲染、
+ * 超出容器就滚动。这样"看得清"与"等于 OBS"可以同时成立。
+ *
+ * ## ⚠️ 这个开关**不持久化**，每次进入页面都回到等比档
+ * 早期它是普通 ref，用户点过一次 1:1 之后就一直停在那一档——而 1:1 下
+ * 画面远超预览栏宽，于是"预览只有半张图、还带横向滚动条"，
+ * 看起来像功能坏了（用户就这么反馈过）。现在进入页面时显式复位。
  */
 const previewActualSize = ref(false)
 
-/** 等比档的缩放比；1:1 档恒为 1。 */
+/**
+ * 预览画布尺寸，来自当前样式（`draft.canvas_*`）。
+ *
+ * ## 为什么这是"预览像不像 OBS"的关键
+ * 面板的排版（换行、`wide` 是否左右分栏）与背景图 `cover` 的裁切，
+ * **完全由容器尺寸决定**。所以这里必须等于**你 OBS 浏览器源的实际宽高**。
+ *
+ * 早期写死 `960×540`，而用户的实际源是 `400×600` 竖版——预览怎么调都对不上。
+ */
+const previewCanvasW = computed(() => {
+  const v = Number(draft.value?.canvas_w)
+  return Number.isFinite(v) && v > 0 ? v : 1920
+})
+const previewCanvasH = computed(() => {
+  const v = Number(draft.value?.canvas_h)
+  return Number.isFinite(v) && v > 0 ? v : 1080
+})
+
+/** 常用画布尺寸，一键切换（`400×600` 是竖版源的典型值）。 */
+const CANVAS_PRESETS: Array<{ w: number; h: number; label: string }> = [
+  { w: 1920, h: 1080, label: '1920×1080' },
+  { w: 1280, h: 720, label: '1280×720' },
+  { w: 960, h: 540, label: '960×540' },
+  { w: 400, h: 600, label: '400×600' },
+  { w: 600, h: 400, label: '600×400' },
+]
+
+/** 设定画布尺寸（限制在合理范围内，避免手滑输入 0 或超大值）。 */
+function setCanvasSize(w: number, h: number): void {
+  if (!draft.value) return
+  const cw = Math.min(7680, Math.max(120, Math.round(w)))
+  const ch = Math.min(4320, Math.max(120, Math.round(h)))
+  draft.value.canvas_w = cw
+  draft.value.canvas_h = ch
+}
+
+/** 当前是否正好是某个预设。 */
+function isCanvasPreset(w: number, h: number): boolean {
+  return previewCanvasW.value === w && previewCanvasH.value === h
+}
+
+// ── 预览栏宽度：可拖动 ───────────────────────────────────────────────────
+
+/**
+ * 预览栏宽度（px）。
+ *
+ * 早期是 CSS 里写死的 `380px`，而左边表单有 949px——**大部分是空的**，
+ * 预览却被挤得看不清。现在可拖，并跟随草稿持久化。
+ */
+const asideWidth = computed({
+  get: () => {
+    const v = Number(draft.value?.preview_width)
+    return Number.isFinite(v) && v > 0 ? v : 440
+  },
+  set: (v: number) => {
+    if (!draft.value) return
+    draft.value.preview_width = Math.min(900, Math.max(280, Math.round(v)))
+  },
+})
+
+/** 分隔条是否正在拖动（拖动时禁用过渡、改变光标）。 */
+const resizingAside = ref(false)
+
+function startAsideResize(ev: PointerEvent): void {
+  resizingAside.value = true
+  const startX = ev.clientX
+  const startW = asideWidth.value
+  // 分隔条在预览栏**左侧**，向左拖 = 预览变宽，所以用减法
+  const onMove = (e: PointerEvent) => {
+    asideWidth.value = startW - (e.clientX - startX)
+  }
+  const onUp = () => {
+    resizingAside.value = false
+    window.removeEventListener('pointermove', onMove)
+    window.removeEventListener('pointerup', onUp)
+  }
+  window.addEventListener('pointermove', onMove)
+  window.addEventListener('pointerup', onUp)
+  ev.preventDefault()
+}
+
+/**
+ * 「放大预览」整页模式：预览占满整个内容区，表单暂时让位。
+ *
+ * 这是唯一能让**大画布（如 1920×1080）也按 1:1 看**的办法——
+ * 侧栏再宽也放不下。
+ */
+const previewExpanded = ref(false)
+
+/*
+ * 「1:1 实际大小」开关**每次进入页面都复位到等比档**。
+ *
+ * ## 为什么必须复位
+ * 早期它是个普通 ref，用户点过一次 1:1 之后就**一直停在那一档**。
+ * 而 1:1 下画面远超预览栏宽，于是表现为"预览只有半张图、还带横向滚动条"，
+ * 看起来像功能坏了（用户就是这么反馈的）。
+ *
+ * 它只是临时查看手段、不是偏好设置，所以不持久化。
+ * 这里不能直接写 `previewActualSize.value = false`——那样在 setup 阶段
+ * 赋值没有意义（本来就是 false），必须在挂载时执行才能覆盖"上次离开时的状态"。
+ */
+onMounted(() => {
+  previewActualSize.value = false
+})
+
+/**
+ * 等比档的缩放比；1:1 档恒为 1。
+ *
+ * 只按**可用宽度**算（不按高度）——高度那一路会和"高度由缩放决定"互相
+ * 牵扯成循环，见上面 `previewBoxEl` 的说明。特别高的预览由 CSS 的
+ * `max-height` + 滚动兜住，不影响比例。
+ */
 const previewScale = computed(() => {
   if (previewActualSize.value) return 1
   const w = previewBoxSize.value.w
   if (!w) return 0.4
-  return Math.min(w / PREVIEW_CANVAS_W, 1)
+  return Math.min(w / previewCanvasW.value, 1)
 })
 
-/** 等比档下容器需要的高度（1:1 档由内容自己撑，交给滚动）。 */
-const previewBoxHeight = computed(() =>
-  previewActualSize.value
-    ? 420
-    : Math.round((previewBoxSize.value.w * PREVIEW_CANVAS_H) / PREVIEW_CANVAS_W) || 270,
-)
+/** 缩放后画布的实际显示尺寸。 */
+const previewDisplayW = computed(() => Math.max(1, Math.round(previewCanvasW.value * previewScale.value)))
+const previewDisplayH = computed(() => Math.max(1, Math.round(previewCanvasH.value * previewScale.value)))
 
 /**
  * 预览用的**已解析样式**——直接来自当前草稿。
@@ -1464,7 +1608,11 @@ async function copyAll(): Promise<void> {
         无论左边滚到哪里，预览始终可见（`position: sticky`）。
         窄屏（< 1080px）自动回落到单栏，预览回到内容下方。
       -->
-      <div class="editor-layout">
+      <div
+        class="editor-layout"
+        :class="{ 'is-expanded': previewExpanded, 'is-resizing': resizingAside }"
+        :style="{ '--aside-w': `${asideWidth}px` }"
+      >
         <div class="editor-main">
       <template v-if="!showBackgroundsOnly">
       <!-- ── 样式列表（命名样式）────────────────────────────────────── -->
@@ -1920,6 +2068,20 @@ async function copyAll(): Promise<void> {
           「背景图库」页只管上传/裁剪/删除图片，那里放一份面板预览没有意义，
           还会把图片网格挤窄。这与需求一致：双栏吸附预览属于 OBS 面板页。
         -->
+        <!--
+          拖动分隔条调整预览栏宽度。
+          早期这里是 CSS 写死的 380px，而左边表单有 949px（大部分是空的），
+          预览被挤得看不清。宽度跟随草稿持久化。
+        -->
+        <div
+          v-if="!showBackgroundsOnly && !previewExpanded"
+          class="aside-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          title="拖动调整预览栏宽度"
+          @pointerdown="startAsideResize"
+        />
+
         <aside v-if="!showBackgroundsOnly" class="editor-aside">
           <section class="card preview-card">
             <div class="card-head">
@@ -1929,15 +2091,68 @@ async function copyAll(): Promise<void> {
                   class="ghost"
                   :title="
                     previewActualSize
-                      ? '切回等比缩略（整块都看得见，版式与 OBS 一致）'
-                      : '按 960×540 真实尺寸显示，超出部分可滚动——这是 OBS 里的实际大小'
+                      ? '切回等比缩放（整块都看得见，版式仍与 OBS 一致）'
+                      : `按 ${previewCanvasW}×${previewCanvasH} 真实尺寸显示，超出部分可滚动——这是 OBS 里的实际大小`
                   "
                   @click="previewActualSize = !previewActualSize"
                 >
-                  {{ previewActualSize ? '适应宽度' : '1:1 实际大小' }}
+                  {{ previewActualSize ? '等比缩放' : '1:1 实际大小' }}
+                </button>
+                <button
+                  class="ghost"
+                  :title="
+                    previewExpanded
+                      ? '收回侧栏（恢复表单与预览并排）'
+                      : '预览占满整个内容区，大画布也能按 1:1 看'
+                  "
+                  @click="previewExpanded = !previewExpanded"
+                >
+                  {{ previewExpanded ? '收回' : '放大' }}
                 </button>
               </div>
             </div>
+
+            <!--
+              画布尺寸 = **你 OBS 浏览器源的实际宽高**。
+              面板排版与背景图裁切完全由容器尺寸决定，所以这个值必须对得上，
+              否则"预览里看着刚好、OBS 里完全两样"。
+              见 `PanelPreview.vue` 的 props 说明。
+            -->
+            <div class="canvas-row">
+              <span class="canvas-label">画布</span>
+              <input
+                type="number"
+                class="canvas-num"
+                :value="previewCanvasW"
+                min="120"
+                max="7680"
+                title="你 OBS 浏览器源的宽度"
+                @change="setCanvasSize(Number(($event.target as HTMLInputElement).value), previewCanvasH)"
+              />
+              <span class="canvas-x">×</span>
+              <input
+                type="number"
+                class="canvas-num"
+                :value="previewCanvasH"
+                min="120"
+                max="4320"
+                title="你 OBS 浏览器源的高度"
+                @change="setCanvasSize(previewCanvasW, Number(($event.target as HTMLInputElement).value))"
+              />
+              <div class="canvas-presets">
+                <button
+                  v-for="c in CANVAS_PRESETS"
+                  :key="c.label"
+                  class="ghost mini-preset"
+                  :class="{ active: isCanvasPreset(c.w, c.h) }"
+                  :title="`设为 ${c.label}`"
+                  @click="setCanvasSize(c.w, c.h)"
+                >
+                  {{ c.label }}
+                </button>
+              </div>
+            </div>
+
             <!-- 面板类型切换：一行放下，避免和预览抢高度 -->
             <div class="preview-tabs">
               <button
@@ -1955,26 +2170,30 @@ async function copyAll(): Promise<void> {
               iframe 与设置页跨源，既做不到"改样式立刻可见"，
               宽度也和一个真实的 OBS 画布差太远。见 `PanelPreview.vue`。
             -->
-            <div
-              ref="previewBoxEl"
-              class="preview-frame"
-              :class="{ 'is-actual': previewActualSize }"
-              :style="{
-                '--pv-scale': String(previewScale),
-                height: `${previewBoxHeight}px`,
-              }"
-            >
-              <PanelPreview
-                :style="previewResolvedStyle"
-                :page="previewKey === 'all' ? 'all' : previewKey"
-              />
+            <div ref="previewBoxEl" class="preview-box">
+              <div
+                class="preview-frame"
+                :class="{ 'is-actual': previewActualSize }"
+                :style="{
+                  '--pv-scale': String(previewScale),
+                  width: `${previewDisplayW}px`,
+                  height: `${previewDisplayH}px`,
+                }"
+              >
+                <PanelPreview
+                  :style="previewResolvedStyle"
+                  :page="previewKey === 'all' ? 'all' : previewKey"
+                  :canvas-w="previewCanvasW"
+                  :canvas-h="previewCanvasH"
+                />
+              </div>
             </div>
             <p class="dim preview-hint">
               <template v-if="previewActualSize">
                 1:1 实际大小，可滚动——<strong>这就是 OBS 里的真实尺寸</strong>。
               </template>
               <template v-else>
-                等比缩略，版式与 OBS 一致；字偏小属正常（= 真实源里的字大小）。
+                等比缩放，版式与 OBS 一致；字偏小属正常（= 真实源里的字大小）。
               </template>
             </p>
           </section>
@@ -2201,6 +2420,8 @@ async function copyAll(): Promise<void> {
               <PanelPreview
                 :style="previewResolvedStyle"
                 :page="previewKey === 'all' ? 'all' : previewKey"
+                :canvas-w="previewCanvasW"
+                :canvas-h="previewCanvasH"
               />
             </div>
           </div>
@@ -2301,18 +2522,126 @@ async function copyAll(): Promise<void> {
 
 .editor-layout {
   display: grid;
-  /* 右栏固定 380px：够看清面板比例，又不至于把左侧表单挤窄 */
-  grid-template-columns: minmax(0, 1fr) 380px;
+  /*
+   * 三列：表单 | 拖动条 | 预览。
+   *
+   * 右栏宽度由 `--aside-w` 给出（可拖动，跟随草稿持久化）。
+   * 早期写死 `380px`，而左边表单实测有 949px——**大部分是空的**，
+   * 预览却被挤得看不清，用户反馈"看着好难受"。
+   */
+  grid-template-columns: minmax(0, 1fr) 8px var(--aside-w, 440px);
   gap: 16px;
   align-items: start;
 }
 
+/* 拖动中：禁用过渡与文本选中，避免拖起来"粘手" */
+.editor-layout.is-resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
 /*
- * 「背景图库」页没有右栏预览，第三列空着会把图片网格挤窄 —— 改成单栏。
+ * 「放大预览」整页模式：预览占满整个内容区，表单暂时让位。
+ * 这是唯一能让**大画布（如 1920×1080）也按 1:1 看**的办法——
+ * 侧栏再宽也放不下。
+ */
+.editor-layout.is-expanded {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.editor-layout.is-expanded .editor-main {
+  display: none;
+}
+
+/*
+ * 预览栏宽度拖动条。
+ * 视觉上是一条很轻的竖线，hover/拖动时才明显——不抢注意力，
+ * 但鼠标移上去能看出"这里可以拖"（`cursor: col-resize`）。
+ */
+.aside-resizer {
+  align-self: stretch;
+  min-height: 240px;
+  border-radius: 999px;
+  background: transparent;
+  cursor: col-resize;
+  transition: background 0.12s ease;
+}
+
+.aside-resizer:hover,
+.editor-layout.is-resizing .aside-resizer {
+  background: var(--bsr-accent-soft);
+}
+
+/*
+ * 「背景图库」页没有右栏预览，多出来的两列会把图片网格挤窄 —— 改成单栏。
  * 用 `:has()` 按"有没有右栏"来决定，比再传一个 class 更不容易忘记同步。
  */
 .editor-layout:not(:has(.editor-aside)) {
   grid-template-columns: minmax(0, 1fr);
+}
+
+/*
+ * 画布尺寸行：`画布 [1920] × [1080]  [预设…]`
+ *
+ * 它决定预览按多大渲染，也就决定"预览像不像 OBS"。
+ */
+.canvas-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.canvas-label {
+  color: var(--bsr-muted);
+}
+
+.canvas-num {
+  width: 68px;
+  padding: 3px 6px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 6px;
+  background: var(--bsr-bg-elevated);
+  color: var(--bsr-fg);
+  font-size: 12px;
+}
+
+.canvas-x {
+  color: var(--bsr-muted);
+}
+
+.canvas-presets {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+/*
+ * 预设小按钮。基础样式必须写全——`.preview-card` 不在 `.controls` 里，
+ * 不写就退回浏览器默认外观（这个坑在本文件踩过好几次）。
+ */
+.mini-preset {
+  padding: 2px 7px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 6px;
+  background: var(--bsr-bg-elevated);
+  color: var(--bsr-muted);
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.mini-preset:hover {
+  border-color: var(--bsr-accent);
+  color: var(--bsr-fg);
+}
+
+.mini-preset.active {
+  border-color: var(--bsr-accent);
+  background: var(--bsr-accent-soft);
+  color: var(--bsr-accent);
 }
 
 .editor-main {
@@ -2401,10 +2730,39 @@ async function copyAll(): Promise<void> {
  *
  * 这里**不写 aspect-ratio**——它只在等比档成立，1:1 档会把容器压变形。
  */
-.preview-frame {
+/*
+ * 预览框尺寸由内联样式给出（= 画布 × 缩放比）。
+ * 这里只负责边框、裁切与底纹。
+ *
+ * ⚠️ 不要再写 `width: 100%`：等比档下宽度正好等于缩放后的画布宽，
+ * 1:1 档下则可能超出栏宽（那时才需要滚动）。
+ */
+/*
+ * 预览可用空间。只是个占位/量尺寸的容器：宽度等于卡片内容宽，
+ * 高度不限（因此不会反过来影响缩放比）。
+ */
+.preview-box {
   width: 100%;
+  min-width: 0;
+}
+
+.preview-frame {
+  max-width: 100%;
+  /* 限高：特别高的画布（如 400×900）不会把卡片撑破，超出部分可滚动 */
+  max-height: 70vh;
   border: 1px solid var(--bsr-border);
   border-radius: 8px;
+  /*
+   * ⚠️ 基础态必须是 hidden，**不能**是 auto。
+   *
+   * 等比档下预览框的宽度正好等于「缩放后的画布宽」，而边框 + 可能出现的
+   * 纵向滚动条会让 clientWidth 比它小十几个像素。若这里用 `auto`，
+   * 就会因为「内容宽 400 > 客户区 383」判出一个**横向滚动条**，
+   * 而那条滚动条又进一步吃掉宽度——实测 400 宽的画布只显示出 383，
+   * 看着像内容溢出了，其实面板内部一个溢出元素都没有。
+   *
+   * 只有 1:1 档确实需要滚动，那里单独开（见 `.is-actual`）。
+   */
   overflow: hidden;
   background: #f6e9ef;
 }
@@ -2415,6 +2773,7 @@ async function copyAll(): Promise<void> {
  * 用 `overflow: auto` 而不是缩放——这样量到的字号/换行**与 OBS 完全一致**，
  * 是唯一"绝对可信"的预览模式。
  */
+/* 1:1 档：画布可能比栏宽大得多，必须能滚动 */
 .preview-frame.is-actual {
   overflow: auto;
   /* 棋盘格：透明背景是否生效一眼可见（对应 OBS 里勾选"透明背景"） */
@@ -2436,12 +2795,23 @@ async function copyAll(): Promise<void> {
  * 否则在小窗口里会盖住表单）。
  */
 @media (max-width: 1080px) {
-  .editor-layout {
+  .editor-layout,
+  .editor-layout.is-expanded {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .editor-aside {
     position: static;
+  }
+
+  /* 单栏时没有左右可分，拖动条没有意义 */
+  .aside-resizer {
+    display: none;
+  }
+
+  /* 整页模式在单栏下本来就是单栏，恢复显示表单，否则会"什么都看不到" */
+  .editor-layout.is-expanded .editor-main {
+    display: flex;
   }
 }
 

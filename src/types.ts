@@ -364,6 +364,19 @@ export interface PanelStyleConfig {
    * `null` / 空串 = `center`（与不设时行为一致）。
    */
   bg_position: string | null
+  /**
+   * **预览画布尺寸**（宽 × 高，CSS px）——即你 OBS 浏览器源的实际宽高。
+   *
+   * 面板排版（换行、`wide` 分栏）与背景图 `cover` 裁切**完全由容器尺寸决定**，
+   * 所以设置页的预览必须按这个尺寸渲染，否则"预览里刚好、OBS 里两样"。
+   *
+   * 它**不影响** OBS 的实际显示（OBS 用自己的源尺寸），只决定预览怎么渲染。
+   * `null` = `1920×1080`（OBS 标准画布）。
+   */
+  canvas_w: number | null
+  canvas_h: number | null
+  /** 设置页预览栏宽度（px）。纯界面偏好，不影响显示效果。 */
+  preview_width: number | null
   font_size: number
   scale: number
   limit: number

@@ -341,6 +341,26 @@ pub struct PanelStyleConfig {
     /// `None` / 空串 = `center`，与不设时行为一致（老配置不受影响）。
     #[serde(default)]
     pub bg_position: Option<String>,
+    /// **预览画布尺寸**（宽 × 高，CSS px）。
+    ///
+    /// ## 为什么样式里要存"预览用的尺寸"
+    /// 这两个值描述的是**你 OBS 浏览器源的实际宽高**。面板的排版
+    /// （换行位置、`wide` 布局是否左右分栏）与背景图 `cover` 的裁切，
+    /// **完全由容器尺寸决定**——所以设置页的预览必须按这个尺寸渲染，
+    /// 否则"预览里看着刚好，OBS 里完全两样"。
+    ///
+    /// 它不影响 OBS 里的实际显示（OBS 用自己源的尺寸），
+    /// 只决定预览怎么渲染，所以放在样式里跟着走是合适的：
+    /// 一个样式通常对应一组尺寸相同的源。
+    ///
+    /// 老配置没有这两个字段时回落到 `1920×1080`（OBS 标准画布）。
+    #[serde(default)]
+    pub canvas_w: Option<u32>,
+    #[serde(default)]
+    pub canvas_h: Option<u32>,
+    /// 设置页里预览栏的宽度（px）。纯界面偏好，不影响任何显示效果。
+    #[serde(default)]
+    pub preview_width: Option<u32>,
     pub font_size: u32,
     pub scale: f64,
     pub limit: usize,
@@ -389,6 +409,12 @@ impl Default for PanelStyleConfig {
             bg_opacity: 1.0,
             // None = center，与加这个字段之前的行为一致
             bg_position: None,
+            // None = 1920×1080（OBS 标准画布），与加字段前的写死值无关：
+            // 早期预览写死 960×540，那是拍脑袋的"典型值"，已废弃
+            canvas_w: None,
+            canvas_h: None,
+            // None = 440px（比早期写死的 380px 宽，因为左边表单有 949px 太空）
+            preview_width: None,
             font_size: 16,
             scale: 1.0,
             limit: 8,

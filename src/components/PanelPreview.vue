@@ -48,6 +48,19 @@ const props = defineProps<{
   style: ResolvedPanelStyle
   /** 预览哪一页：all / play / lyrics / danmaku。 */
   page: string
+  /**
+   * **虚拟画布尺寸**（CSS px）。
+   *
+   * ## 这就是"预览像不像 OBS"的关键
+   * 面板的排版（换行位置、`wide` 是否左右分栏、``cover`` 背景图裁掉哪一块）
+   * **完全由容器尺寸决定**。OBS 浏览器源的宽高是多少，面板就该按多少渲染。
+   *
+   * 早期这里**写死 960×540**（我拍的"典型 16:9"），结果用户的实际源是
+   * **400×600 竖版**：预览里的换行与背景裁切和 OBS 里完全对不上，
+   * 而且他怎么调都调不准。现在尺寸由调用方传入（设置页里可填、可存）。
+   */
+  canvasW: number
+  canvasH: number
   /** 是否用真实数据（设置页里没有真实数据时用示例）。 */
   useRealData?: boolean
   /** 真实数据（`useRealData` 为真时使用）。 */
@@ -132,29 +145,27 @@ const danmakuLog = computed(() =>
 )
 
 /**
- * 面板的**虚拟画布**尺寸。
+ * 画布尺寸的兜底值。
  *
- * 这是渲染时的固定尺寸，也是「1:1 实际大小」那一档的真实尺寸：
- * `960×540` 是 1080p 画布的一半，属于 OBS 里很常见的浏览器源尺寸，
- * 因此在这个尺寸下量到的排版（换行位置、`wide` 分栏比例）有参考价值。
- *
- * 组件**不做缩放**——缩到栏宽或按原尺寸滚动都由父组件用 CSS 决定，
- * 这样组件始终"如实渲染"，不会出现"预览里看着刚好、OBS 里差一半"。
+ * 只在调用方没传（或传了非法值）时用。`1920×1080` 是 OBS 的标准画布尺寸，
+ * 也是绝大多数人的实际情况。
  */
-const CANVAS_W = 960
-const CANVAS_H = 540
+const FALLBACK_W = 1920
+const FALLBACK_H = 1080
+
+const canvasW = computed(() => (props.canvasW > 0 ? props.canvasW : FALLBACK_W))
+const canvasH = computed(() => (props.canvasH > 0 ? props.canvasH : FALLBACK_H))
 </script>
 
 <template>
   <!--
-    固定虚拟画布。父组件通过 CSS 变量控制它是被缩放还是原尺寸滚动：
-      --pv-scale  缩放比（父组件按容器宽度算好）
-    用 `transform: scale(var(--pv-scale))` 而不是内联值，是为了让父组件
-    不必知道画布尺寸就能切换模式。
+    固定虚拟画布：宽高由调用方给出，**组件自己不做任何缩放**。
+    缩放比由父组件通过 CSS 变量 `--pv-scale` 给出（默认 1 = 1:1 实际大小）。
+    这样组件始终"如实渲染"，不会出现"预览里看着刚好、OBS 里差一半"。
   -->
   <div
     class="panel-preview-stage"
-    :style="{ width: `${CANVAS_W}px`, height: `${CANVAS_H}px` }"
+    :style="{ width: `${canvasW}px`, height: `${canvasH}px` }"
   >
     <PanelView
       :resolved="style"
@@ -169,12 +180,10 @@ const CANVAS_H = 540
 
 <style scoped>
 /*
- * 画布本体。`zoom` 而不是 `transform: scale`：
- *  - `zoom` 会**改变布局尺寸**，父组件不需要为缩放后的高度预留空间，
- *    容器用 `overflow: auto` 就能自然地"该滚动就滚动"；
- *  - `transform` 不改变布局尺寸，缩放后元素仍占原尺寸，必须手工补偿高度。
- *
- * 缩放比由父组件通过 `--pv-scale` 给出（默认 1 = 1:1 实际大小）。
+ * 画布本体。用 `zoom` 而不是 `transform: scale`：
+ *  - `zoom` 会**改变布局尺寸**，父容器用 `overflow: auto` 就能自然地
+ *    "该滚动就滚动"，不需要手工补偿缩放后的高度；
+ *  - `transform` 不改变布局尺寸，缩放后元素仍占原尺寸，必须手工补高度。
  */
 .panel-preview-stage {
   zoom: var(--pv-scale, 1);
