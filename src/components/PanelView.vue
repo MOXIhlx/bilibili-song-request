@@ -436,14 +436,14 @@ function formatDuration(seconds: number): string {
 
 .np-title {
   margin-top: 4px;
-  font-size: 1.35em;
+  font-size: calc(var(--panel-font-size) * var(--panel-fs-title, 1.35));
   /* 歌名有独立的颜色变量：`--panel-title` 没单独设时由 JS 解析成主色 */
   color: var(--panel-title, var(--panel-color));
 }
 
 .np-artist {
   margin-top: 2px;
-  font-size: 0.9em;
+  font-size: calc(var(--panel-font-size) * var(--panel-fs-body, 0.9));
   color: var(--panel-sub);
 }
 
@@ -475,7 +475,8 @@ function formatDuration(seconds: number): string {
   display: flex;
   justify-content: space-between;
   margin-top: 4px;
-  font-size: 0.75em;
+  /* 时间有自己的档位：综合版 0.75，播放页 1（原来就是这样差一档） */
+  font-size: calc(var(--panel-font-size) * var(--panel-fs-time, 0.75));
   color: var(--panel-sub);
 }
 
@@ -511,7 +512,7 @@ function formatDuration(seconds: number): string {
   margin: 0;
   padding: 2px 0;
   line-height: 1.6;
-  font-size: 0.92em;
+  font-size: calc(var(--panel-font-size) * var(--panel-fs-lyrics, 0.92));
   text-align: center;
   color: var(--panel-sub);
   opacity: 0.72;
@@ -582,18 +583,26 @@ function formatDuration(seconds: number): string {
 }
 
 /* 弹幕页字号放大：内容少，可以放心做大 */
-.obs-panel[data-page='danmaku'] .danmaku-list {
-  font-size: 1.5em;
+.obs-panel[data-page='danmaku'] {
+  /* 弹幕页的字号默认：弹幕大、标题略大 */
+  --panel-fs-danmaku: 1.5;
+  --panel-fs-body: 1.15;
 }
 
-.obs-panel[data-page='danmaku'] .queue-head {
-  font-size: 1.15em;
+.obs-panel[data-page='danmaku'] .danmaku-list {
+  font-size: calc(var(--panel-font-size) * var(--panel-fs-danmaku, 1.5));
 }
+
+
 
 /* 歌词页字号放大（专注页只有歌词，整屏给它） */
 .obs-panel[data-page='lyrics'] .lyrics-box {
-  font-size: 1.55em;
   line-height: 2;
+}
+
+.obs-panel[data-page='lyrics'] {
+  /* 歌词页整体放大一档 */
+  --panel-fs-lyrics: 1.55;
 }
 
 .obs-panel[data-page='lyrics'] .lyric-line {
@@ -601,40 +610,69 @@ function formatDuration(seconds: number): string {
 }
 
 /* 播放页：进度条与队列放大，正在播放的标题更醒目 */
-.obs-panel[data-page='play'] .np-title {
-  font-size: 1.5em;
-}
-
-.obs-panel[data-page='play'] .np-artist,
-.obs-panel[data-page='play'] .np-by {
-  font-size: 1.1em;
+/*
+ * 页面级字号默认值：**必须设在根节点上**。
+ *
+ * ⚠️ 这里踩过一个坑：一开始把 `--panel-fs-title: 1.5` 设在
+ * `.np-title` `.np-by` 这些**元素自身**上，结果用户在设置页调「歌名」倍率
+ * **完全没反应**——因为用户的值设在根节点（`.obs-panel`），而元素自身的
+ * 声明永远赢过继承来的值。实测：队列项能调（它的变量设在根节点），
+ * 歌名/正文调不动（设在元素上），现象就是这么来的。
+ *
+ * 现在统一设在根节点，用户设置（也在根节点、且由内联样式给出、优先级更高）
+ * 可以正常覆盖。
+ */
+.obs-panel[data-page='play'] {
+  /*
+   * ⚠️ 这里必须**设变量**而不是直接写 `font-size`。
+   *
+   * 该选择器优先级（0,3,0）高于基类 `.np-title`（0,1,0），
+   * 直接写 `font-size` 会把用户设的 `--panel-fs-title` **整个盖掉**——
+   * 实测：在播放页调「歌名」倍率完全没反应，切到综合面板才生效，
+   * 原因就是被这条规则压住了。
+   *
+   * 改成设变量后，变量重新成为唯一权威；值仍是 1.5em，
+   * 所以不设倍率时外观与以前完全一致。
+   */
+  /*
+   * ⚠️ 必须是无单位倍率，不是 `1.5em`。
+   *
+   * 变量会被 `calc(基础字号 × 倍率)` 使用；带单位的 `em` 会让整条声明**失效**
+   * （实测：变量设成 `1.5em` 时 `font-size` 直接掉回继承值）。
+   */
+  --panel-fs-title: 1.5;
+  /* 歌手 / 点歌人：播放页上比综合版大一档 */
+  --panel-fs-body: 1.1;
+  /*
+   * 进度时间单独一档。
+   *
+   * ⚠️ 不能和「歌手」共用一个变量：播放页上歌手是 1.1、时间是 1.0，
+   * 共用一个会把时间也放大成 1.1（实测 16px → 17.6px，与改动前的观感不一致）。
+   */
+  --panel-fs-time: 1;
 }
 
 .obs-panel[data-page='play'] .np-progress {
   height: 10px;
 }
 
-.obs-panel[data-page='play'] .np-times {
-  font-size: 1em;
-}
-
 .obs-panel[data-page='play'] .queue-list {
-  font-size: 1.25em;
+  /* 队列曲目：基类是 1 倍（= 基础字号），播放页把它调到 1.25（见 data-page='play' 规则） */
+  font-size: calc(var(--panel-font-size) * var(--panel-fs-queue, 1));
 }
 
 .obs-panel[data-page='play'] .queue-item {
   padding: 0.32em 0;
 }
 
-.obs-panel[data-page='play'] .queue-head {
-  font-size: 1.15em;
-}
+
 
 .queue-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  font-size: 0.8em;
+  /* 队列标题用「正文」这一档；播放页/弹幕页会把它调大到 1.15 */
+  font-size: calc(var(--panel-font-size) * var(--panel-fs-body, 0.8));
   letter-spacing: 0.1em;
   color: var(--panel-sub);
 }
@@ -688,7 +726,8 @@ function formatDuration(seconds: number): string {
 
 .qi-artist,
 .qi-user {
-  font-size: 0.82em;
+  /* 点歌人比正文再小一点，所以兜底是 0.82 而不是 0.9 */
+  font-size: calc(var(--panel-font-size) * var(--panel-fs-user, 0.82));
   color: var(--panel-sub);
   white-space: nowrap;
 }
@@ -704,8 +743,11 @@ function formatDuration(seconds: number): string {
   display: none;
 }
 
-.obs-panel[data-layout='compact'] .np-title {
-  font-size: 1.15em;
+
+
+.obs-panel[data-layout='compact'] {
+  /* 精简单行里歌名收小一档 */
+  --panel-fs-title: 1.15;
 }
 
 .obs-panel[data-layout='compact'] .lyrics-box {

@@ -39,7 +39,7 @@ import BackgroundEditor from '@/components/BackgroundEditor.vue'
 import BgPositionEditor from '@/components/BgPositionEditor.vue'
 import { showMessage } from '@/stores/message'
 import { useAppStore } from '@/stores/app'
-import type { PanelStyleConfig } from '@/types'
+import type { FontScaleConfig, PanelStyleConfig } from '@/types'
 
 const store = useAppStore()
 const route = useRoute()
@@ -299,6 +299,7 @@ const DEFAULT_PANEL = {
   canvas_w: null,
   canvas_h: null,
   preview_width: null,
+  font_scale: null,
   font_size: 16,
   scale: 1,
   limit: 8,
@@ -334,15 +335,41 @@ const enabledPanels = ref<Record<PanelKey, boolean>>({
   lyrics: true,
   danmaku: true,
 })
+/*
+ * 每个面板地址的 `?scale=` 倍率。
+ *
+ * ## ⚠️ 全部保持 1，地址里就永远不会出现 `scale=`
+ * 早期这里给歌词/弹幕预设了 `1.55` / `1.5`（那时想的是"歌词页该大一点"），
+ * 于是生成出来的地址是 `/panel/lyrics?style=x&scale=1.55`。
+ *
+ * 但用户明确要求**不要用缩放来调字号**，改用「外观 → 字号」里的分项倍率。
+ * 那个输入框已经删掉，若这里还留着非 1 的初值，用户就**再也改不掉它**
+ * （界面里没有入口了），地址也会一直挂着一个莫名其妙的 `scale=1.55`。
+ *
+ * 所以全部归 1：地址恒为 `/panel/xxx?style=<id>`，与用户已有的 OBS 地址格式一致。
+ * 需要临时放大某一个源时，仍可在控制台调用 `__setFontScale('lyrics', 1.3)`。
+ */
 const fontScale = ref<Record<string, number>>({
   all: 1,
   play: 1,
-  lyrics: 1.55,
-  danmaku: 1.5,
+  lyrics: 1,
+  danmaku: 1,
 })
 
 /**
  * 修改某个专注页的字号倍率。
+ *
+ * ## ⚠️ 界面入口已移除，函数**保留**用于向后兼容
+ * 用户明确要求"不要用缩放来调字号"，所以「面板地址」列表里的那个
+ * **字号倍率**输入框已经删掉，改用「外观 → 字号」里的分项倍率。
+ *
+ * 但 `?scale=` **地址参数本身不能删**：
+ *  - 用户已经在 OBS 里配好的地址不能失效；
+ *  - 它仍是一个有用的能力（同一个样式，某个源单独放大一点）。
+ *
+ * 因此 `urlFor()` 里写 `scale` 的逻辑保留：只要没人改这个 state，
+ * 倍率恒为 1，地址里就**不会**出现 `scale=`，
+ * 生成出来的地址与以前完全一致（例如 `/panel/play?style=style2`）。
  *
  * ⚠️ 用 `@input`（不是 `@change`）并且**把输入值写回 state**：
  * 早期模板写的是 `:value="fontScale[p.key]"` + `@change` 里直接赋值，
@@ -356,6 +383,22 @@ function setFontScale(key: string, raw: string): void {
   // 夹到合理范围，避免 0 或负数算出非法字号
   fontScale.value[key] = Math.min(5, Math.max(0.2, parsed))
 }
+
+/**
+ * 手动设定某个面板地址的 `?scale=` 倍率。
+ *
+ * 界面入口已移除（用户在地址列表里看不到它了），但保留这个可调用的入口：
+ * 控制台里可以直接调用，例如
+ * `__setFontScale('lyrics', 1.3)` 给歌词页单独放大一点。
+ *
+ * 之所以不把整条链路删掉：**已有的 OBS 地址不能失效**。`?scale=` 仍然
+ * 被 `usePanelStyle` 读取并应用，只是不再由界面写入。
+ */
+function setPanelScale(key: string, value: number): void {
+  setFontScale(key, String(value))
+}
+/** 暴露到控制台，便于手动微调（见 `setPanelScale` 的说明）。 */
+;(window as unknown as Record<string, unknown>).__setFontScale = setPanelScale
 
 /** 配置读取失败原因（给出重试入口，避免无尽「加载中」）。 */
 const loadError = ref<string | null>(null)
@@ -753,6 +796,73 @@ function applyStrokePreset(width: number): void {
  * 原来每个颜色项下面都有一行小字说明，纵向把整块拉得很高、也显得杂乱。
  * 现在改成**悬停提示**（`title`），信息保留但不占版面。
  */
+/**
+ * 各元素的**字号倍率**项的界面元数据。
+ *
+ * ## 为什么用"倍率"而不是直接填 px
+ * 面板的字号是一套**相对比例**（歌名比正文大、正文比点歌人小……）。
+ * 若每项都填绝对 px，改「基础字号」时它们不会跟着变，比例就散了。
+ * 用倍率则：基础字号一改，全部按同一比例缩放，相对关系保持。
+ *
+ * `def` 必须与 `PanelView.vue` 里各选择器的兜底值一致，
+ * 否则"没设过"与"点一下默认"会渲染出两个样子。
+ */
+const FONT_SCALE_ITEMS: Array<{
+  field: keyof FontScaleConfig
+  label: string
+  def: number
+  hint: string
+}> = [
+  { field: 'title', label: '歌名', def: 1.35, hint: '正在播放的曲名' },
+  { field: 'body', label: '正文', def: 0.9, hint: '歌手、点歌人、时间等' },
+  { field: 'lyrics', label: '歌词', def: 0.92, hint: '歌词行（当前行会再亮一点、大一点）' },
+  { field: 'queue', label: '队列', def: 1.0, hint: '点歌队列里的曲目' },
+  { field: 'danmaku', label: '弹幕', def: 1.5, hint: '「最近弹幕」页里的弹幕文本' },
+]
+
+/**
+ * 读某项的字号倍率（没设过就用默认比例）。
+ *
+ * `font_scale` 整块为空时返回该字段的默认值，所以界面一打开显示的就是
+ * **当前真实生效的比例**，而不是空白让用户猜。
+ */
+function fontScaleValue(field: keyof FontScaleConfig): number {
+  const s = draft.value?.font_scale
+  const v = s ? Number(s[field]) : NaN
+  const def = FONT_SCALE_ITEMS.find((i) => i.field === field)?.def ?? 1
+  return Number.isFinite(v) && v > 0 ? v : def
+}
+
+/**
+ * 设定某项的字号倍率。
+ *
+ * 会把整块 `font_scale` 补齐（后端字段是一整个对象，不能只写一项），
+ * 并把值夹在 0.3~6——0 会让文字消失、过大则把面板撑爆，
+ * 两者都会让用户以为"面板坏了"。
+ */
+function setFontScaleOf(field: keyof FontScaleConfig, raw: string): void {
+  if (!draft.value) return
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed)) return
+  const value = Math.min(6, Math.max(0.3, Math.round(parsed * 100) / 100))
+  const current = draft.value.font_scale
+  const next: FontScaleConfig = {
+    title: current?.title ?? 1.35,
+    body: current?.body ?? 0.9,
+    lyrics: current?.lyrics ?? 0.92,
+    queue: current?.queue ?? 1.0,
+    danmaku: current?.danmaku ?? 1.5,
+  }
+  next[field] = value
+  draft.value.font_scale = next
+}
+
+/** 把全部字号倍率恢复成默认比例（`null` = 用面板写死的比例）。 */
+function resetFontScale(): void {
+  if (!draft.value) return
+  draft.value.font_scale = null
+}
+
 const COLOR_ITEMS: Array<{ field: ColorField; label: string; hint: string }> = [
   { field: 'color', label: '主色', hint: '队列高亮、歌词当前行、弹幕用户名。改这一处即可换整体色调' },
   { field: 'fg', label: '字体色', hint: '歌手、点歌人、时间等正文颜色' },
@@ -1801,6 +1911,45 @@ async function copyAll(): Promise<void> {
           </div>
         </div>
 
+        <!--
+          字号：基础字号 + 各元素的相对倍率。
+          ⚠️ 必须放在「颜色」**之前**——它比颜色更常调，
+          而且改完能立刻在右侧预览里看到，是这一页最常用的两处之一。
+        -->
+        <h4>字号</h4>
+        <div class="fields">
+          <label>基础字号
+            <input
+              type="number"
+              min="8"
+              max="72"
+              v-model.number="draft.font_size"
+              title="整套面板的字号基数；下面各项都是它的倍数"
+              @change="syncStyleParam('fontSize', String(draft.font_size))"
+            />
+          </label>
+          <label
+            v-for="f in FONT_SCALE_ITEMS"
+            :key="f.field"
+            :title="`${f.hint}。倍数相对「基础字号」，默认 ${f.def}`"
+          >
+            {{ f.label }}
+            <input
+              type="number"
+              step="0.05"
+              min="0.3"
+              max="6"
+              :value="fontScaleValue(f.field)"
+              @input="setFontScaleOf(f.field, ($event.target as HTMLInputElement).value)"
+            />
+          </label>
+          <label class="check">
+            <button class="ghost" title="把各元素字号恢复成默认比例" @click="resetFontScale()">
+              恢复默认比例
+            </button>
+          </label>
+        </div>
+
         <h4>颜色</h4>
         <div class="color-grid">
           <!--
@@ -2126,17 +2275,6 @@ async function copyAll(): Promise<void> {
                 {{ copiedKey === p.key ? '已复制' : '复制' }}
               </button>
               <a class="link" :href="p.url" target="_blank" rel="noreferrer">新窗口打开</a>
-              <label class="inline-num">
-                字号倍率
-                <input
-                  type="number"
-                  step="0.05"
-                  min="0.2"
-                  max="5"
-                  :value="fontScale[p.key]"
-                  @input="setFontScale(p.key, ($event.target as HTMLInputElement).value)"
-                />
-              </label>
             </div>
           </li>
         </ul>

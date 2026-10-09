@@ -28,7 +28,7 @@
  */
 import { computed, onUnmounted, ref, type ComputedRef, type Ref } from 'vue'
 import { API_BASE } from '@/api'
-import type { PanelStyleConfig } from '@/types'
+import type { FontScaleConfig, PanelStyleConfig } from '@/types'
 
 /** 面板实际生效的样式（命名样式 + 地址里的倍率覆盖）。 */
 export interface ResolvedPanelStyle {
@@ -60,6 +60,8 @@ export interface ResolvedPanelStyle {
   bgOpacity: number
   /** 背景图取景位置（CSS `background-position` 写法，空 = `center`）。 */
   bgPosition: string
+  /** 各元素字号倍率（`null` = 用面板默认比例）。 */
+  fontScale: FontScaleConfig | null
   fontSize: number
   /** 字号倍率（**只来自地址**，每个源可以不同）。 */
   scale: number
@@ -154,6 +156,7 @@ export const FALLBACK_STYLE: PanelStyleConfig = {
   canvas_w: null,
   canvas_h: null,
   preview_width: null,
+  font_scale: null,
   font_size: 16,
   scale: 1,
   limit: 8,
@@ -192,6 +195,8 @@ export function styleToResolved(
       : 1,
     // 空 = center，同样是老配置的兜底
     bgPosition: (style.bg_position ?? '').trim() || 'center',
+    // 没设过就是 null，由面板 CSS 的兜底值决定各元素比例
+    fontScale: style.font_scale ?? null,
     fontSize: style.font_size,
     // 倍率只来自地址；样式里的 scale 作为「没有地址参数时的默认倍率」
     scale: scaleOverride ?? style.scale ?? 1,
@@ -288,6 +293,41 @@ export function absoluteBackground(url: string | null, base: string): string | n
 }
 
 /** 把样式转成内联 CSS 变量，挂在面板根节点上。 */
+/**
+ * 把「各元素字号倍率」转成 CSS 变量。
+ *
+ * ## 为什么只输出设过的项
+ * 面板 CSS 里的规则写成 `font-size: var(--panel-fs-title, 1.35em)`，
+ * 兜底值就是它原本写死的比例。所以这里**不输出**等价于"用默认比例"，
+ * 而输出一个相同的值渲染结果也完全一致——两者不会漂移。
+ *
+ * ## 为什么要夹上下限
+ * 0 会让文字消失、过大的值会把面板撑爆，两者都会让用户以为"面板坏了"。
+ * 后端 `FontScaleConfig::sanitize` 也会夹一次，这里是界面层的即时保护
+ * （草稿在保存前就要能正确渲染）。
+ */
+function fontScaleVars(
+  scale: FontScaleConfig | null | undefined,
+): Record<string, string> {
+  if (!scale) return {}
+  const clamp = (v: unknown): number | null => {
+    const n = Number(v)
+    if (!Number.isFinite(n) || n < 0.3 || n > 6) return null
+    return n
+  }
+  const out: Record<string, string> = {}
+  const put = (name: string, v: unknown) => {
+    const c = clamp(v)
+    if (c !== null) out[`--panel-fs-${name}`] = String(c)
+  }
+  put('title', scale.title)
+  put('body', scale.body)
+  put('lyrics', scale.lyrics)
+  put('queue', scale.queue)
+  put('danmaku', scale.danmaku)
+  return out
+}
+
 export function styleToCssVars(style: ResolvedPanelStyle): Record<string, string> {
   // 字体颜色：显式给了就用它，否则跟随主题（与桌面端的粉白主题保持一致）
   const fg = style.fg ?? (style.theme === 'dark' ? '#f8fafc' : '#5a4450')
@@ -341,6 +381,15 @@ export function styleToCssVars(style: ResolvedPanelStyle): Record<string, string
      * 裁掉主体，所以设置页提供了一个拖动选区的界面来改它。
      */
     '--panel-bg-pos': style.bgPosition,
+
+    /*
+     * 各元素的字号倍率。
+     *
+     * 只有用户显式设过的项才输出——没设的留空，
+     * 由面板 CSS 里的 `var(--panel-fs-title, 1.35em)` 兜底，
+     * 这样"没设过"与"显式设成默认值"渲染结果一致。
+     */
+    ...fontScaleVars(style.fontScale),
     '--panel-bg': style.transparent
       ? 'transparent'
       : style.theme === 'dark'

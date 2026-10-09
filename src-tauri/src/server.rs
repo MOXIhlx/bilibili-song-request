@@ -1808,6 +1808,22 @@ fn save_config(ctx: &ServerCtx, next: &Config) -> Result<(), ApiError> {
     if sanitized.ui_theme.sanitize() {
         warn!("界面配色中存在非法颜色，已恢复默认值后再保存");
     }
+    /*
+     * 各元素的字号倍率同样要净化。
+     *
+     * `0` 会让该处文字消失、过大的值会把面板撑爆——两者在界面上都表现为
+     * "面板坏了"，而用户很难联想到是字号倍率的问题。
+     *
+     * 逐样式处理：整个列表里任意一套有非法值都要修，不能只看默认那套
+     * （用户可能只编辑了非默认样式）。
+     */
+    for style in &mut sanitized.panel_styles {
+        if let Some(scale) = style.font_scale.as_mut() {
+            if scale.sanitize() {
+                warn!(style_id = %style.id, "字号倍率存在非法值，已恢复默认比例后再保存");
+            }
+        }
+    }
     let next = &sanitized;
 
     next.save_to(&ctx.config_path)

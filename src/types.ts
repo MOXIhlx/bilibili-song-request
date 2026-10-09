@@ -377,6 +377,14 @@ export interface PanelStyleConfig {
   canvas_h: number | null
   /** 设置页预览栏宽度（px）。纯界面偏好，不影响显示效果。 */
   preview_width: number | null
+  /**
+   * **各元素的字号倍率**（相对 `font_size`；`null` = 用面板默认比例）。
+   *
+   * 面板里歌名/歌词/队列/正文的字号本来就是各自不同的固定比例，
+   * 想微调某一项时以前只能改 `font_size`（整块一起变）或 `?scale=`（整体缩放）。
+   * 现在每项都能单独调，基数是 `font_size`。
+   */
+  font_scale: FontScaleConfig | null
   font_size: number
   scale: number
   limit: number
@@ -437,6 +445,25 @@ export interface Config {
   default_style_id: string
   /** 点歌黑名单（阶段 9）。 */
   blacklist: BlacklistEntry[]
+}
+
+/**
+ * 面板各元素的**字号倍率**（对应后端 `config.rs` 的 `FontScaleConfig`）。
+ *
+ * 每个值都是"基数字号的多少倍"。默认值与面板 CSS 里写死的比例一致，
+ * 所以不填时外观与以前完全相同。
+ */
+export interface FontScaleConfig {
+  /** 歌名。 */
+  title: number
+  /** 歌手 / 点歌人 / 时间等正文。 */
+  body: number
+  /** 歌词行。 */
+  lyrics: number
+  /** 点歌队列里的曲目。 */
+  queue: number
+  /** 弹幕列表里的弹幕文本。 */
+  danmaku: number
 }
 
 /**

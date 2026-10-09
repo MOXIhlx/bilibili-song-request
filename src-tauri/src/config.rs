@@ -95,6 +95,68 @@ fn is_hex_color(value: &str) -> bool {
     hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+/// 面板各元素的**字号倍率**（相对 `PanelStyleConfig::font_size`）。
+///
+/// 每个字段都是"基数字号的多少倍"。默认值与面板 CSS 里写死的比例一致
+/// （见 `PanelView.vue` 的 `--panel-fs-*`），所以不填时外观与以前完全相同。
+///
+/// 为什么用倍率而不是绝对 px：基数字号一改（例如 16 → 20），所有元素
+/// 应当按比例一起变大，而不是各自保持原值导致比例失衡。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FontScaleConfig {
+    /// 歌名。
+    pub title: f64,
+    /// 歌手 / 点歌人 / 时间等**正文**。
+    pub body: f64,
+    /// 歌词行。
+    pub lyrics: f64,
+    /// 点歌队列里的曲目。
+    pub queue: f64,
+    /// 弹幕列表里的弹幕文本。
+    pub danmaku: f64,
+}
+
+impl Default for FontScaleConfig {
+    fn default() -> Self {
+        // ⚠️ 这些数字必须与 `PanelView.vue` 里各选择器的默认值一致，
+        // 否则"没设过"与"显式设成默认"会渲染出两个样子。
+        Self {
+            title: 1.35,
+            body: 0.9,
+            lyrics: 0.92,
+            queue: 1.0,
+            danmaku: 1.5,
+        }
+    }
+}
+
+impl FontScaleConfig {
+    /// 把倍率夹到合理区间，返回是否发生了修改。
+    ///
+    /// 上下限存在的意义：0 会让文字消失，过大的值会把面板撑爆，
+    /// 两者都会让用户以为"面板坏了"。
+    pub fn sanitize(&mut self) -> bool {
+        const MIN: f64 = 0.3;
+        const MAX: f64 = 6.0;
+        let mut changed = false;
+        for v in [
+            &mut self.title,
+            &mut self.body,
+            &mut self.lyrics,
+            &mut self.queue,
+            &mut self.danmaku,
+        ] {
+            if !v.is_finite() || *v < MIN || *v > MAX {
+                // 非法值（NaN / 0 / 负数 / 过大）一律回到默认比例
+                *v = 1.0;
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
 impl UiThemeConfig {
     /// 把非法颜色修回默认值，返回是否发生了修改。
     ///
@@ -361,6 +423,18 @@ pub struct PanelStyleConfig {
     /// 设置页里预览栏的宽度（px）。纯界面偏好，不影响任何显示效果。
     #[serde(default)]
     pub preview_width: Option<u32>,
+    /// **各元素的字号倍率**（相对 `font_size`；`None` = 用面板里写死的默认比例）。
+    ///
+    /// ## 为什么需要它
+    /// 面板里歌名/歌词/队列/正文的字号**本来就是**各自不同的固定比例
+    /// （歌名 `1.35em`、歌词 `0.92em`、队列 `1em`……）。想微调某一项时，
+    /// 以前只能改 `font_size`（整块一起变）或地址里的 `?scale=`（同样是整体缩放），
+    /// **没有单独调一项的办法**。
+    ///
+    /// 现在每项都能单独给一个倍率，基数是 `font_size`。`None` 时用默认比例，
+    /// 所以老配置的外观**完全不变**。
+    #[serde(default)]
+    pub font_scale: Option<FontScaleConfig>,
     pub font_size: u32,
     pub scale: f64,
     pub limit: usize,
@@ -415,6 +489,8 @@ impl Default for PanelStyleConfig {
             canvas_h: None,
             // None = 440px（比早期写死的 380px 宽，因为左边表单有 949px 太空）
             preview_width: None,
+            // None = 用面板里写死的默认比例（外观与加这个字段之前完全一致）
+            font_scale: None,
             font_size: 16,
             scale: 1.0,
             limit: 8,
@@ -1378,5 +1454,42 @@ mod tests {
             cfg.style_by_id(&cfg.default_style_id).is_some(),
             "default_style_id 必须指向真实存在的样式"
         );
+    }
+    #[test]
+    fn font_scale_defaults_match_panel_css() {
+        // 默认值必须与 PanelView.vue 里各选择器的兜底值一致，
+        // 否则"没设过"与"点一下默认"会渲染出两个样子。
+        let s = FontScaleConfig::default();
+        assert_eq!(s.title, 1.35);
+        assert_eq!(s.body, 0.9);
+        assert_eq!(s.lyrics, 0.92);
+        assert_eq!(s.queue, 1.0);
+        assert_eq!(s.danmaku, 1.5);
+        assert!(!s.clone().sanitize(), "默认值本身应当合法");
+    }
+
+    #[test]
+    fn font_scale_sanitize_repairs_illegal_values() {
+        // 0 会让文字消失、过大则把面板撑爆，两者都表现为"面板坏了"
+        for bad in [0.0, -1.0, 0.1, 100.0, f64::NAN, f64::INFINITY] {
+            let mut s = FontScaleConfig::default();
+            s.title = bad;
+            assert!(s.sanitize(), "{bad:?} 应被判为非法并修正");
+            assert_eq!(s.title, 1.0, "{bad:?} 应被修成 1.0");
+        }
+    }
+
+    #[test]
+    fn font_scale_sanitize_keeps_reasonable_values() {
+        let mut s = FontScaleConfig {
+            title: 2.5,
+            body: 0.5,
+            lyrics: 1.2,
+            queue: 3.0,
+            danmaku: 0.4,
+        };
+        assert!(!s.sanitize(), "合理范围内的值不该被改动");
+        assert_eq!(s.title, 2.5);
+        assert_eq!(s.danmaku, 0.4);
     }
 }
