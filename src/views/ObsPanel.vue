@@ -36,6 +36,7 @@ import NavTabs from '@/components/NavTabs.vue'
 import PanelPreview from '@/components/PanelPreview.vue'
 import { clonePlain, styleToResolved } from '@/composables/panelParams'
 import BackgroundEditor from '@/components/BackgroundEditor.vue'
+import BgPositionEditor from '@/components/BgPositionEditor.vue'
 import { showMessage } from '@/stores/message'
 import { useAppStore } from '@/stores/app'
 import type { PanelStyleConfig } from '@/types'
@@ -294,6 +295,7 @@ const DEFAULT_PANEL = {
   track: 'transparent',
   bg_image: null,
   bg_opacity: 1,
+  bg_position: null,
   font_size: 16,
   scale: 1,
   limit: 8,
@@ -899,6 +901,57 @@ function openEditor(bg: BackgroundItem): void {
 function closeEditor(): void {
   editing.value = null
 }
+
+// ── 背景图取景（拖动决定显示哪一块）──────────────────────────────────────
+
+/**
+ * 正在取景的图片；`null` = 关闭。
+ *
+ * ## 与「编辑」的分工
+ * 「编辑」是**改图片本身**（裁剪/旋转/镜像后另存为新文件）；
+ * 「取景」只改**样式里的 `bg_position`**——不动图片，之后还能随时再调。
+ *
+ * 两者都需要，因为它们的取舍不同：想把主体真正裁掉、减小文件用「编辑」；
+ * 只想让面板显示图片的某个区域、又不想多存一份文件用「取景」。
+ */
+const panningBg = ref<BackgroundItem | null>(null)
+
+function openPanEditor(bg: BackgroundItem): void {
+  panningBg.value = bg
+  // 若这张图还不是当前样式的背景图，顺手设上——否则调完位置看不到效果
+  if (draft.value && draft.value.bg_image !== bg.url) {
+    pickBackground(bg)
+  }
+}
+
+function closePanEditor(): void {
+  panningBg.value = null
+}
+
+/** 拖动时即时写进草稿（预览会立刻跟着变）。 */
+function setBgPosition(value: string): void {
+  if (!draft.value) return
+  draft.value.bg_position = value
+}
+
+/**
+ * 取景时用的面板比例。
+ *
+ * 面板画布固定按 `960×540`（16:9）渲染，所以取景框也必须用同一比例——
+ * 否则用户在这个框里对好的位置，到 OBS 里会因为容器比例不同而变样。
+ */
+const panAspect = 16 / 9
+
+/**
+ * 取景弹窗里那块"实际效果"预览的缩放比。
+ *
+ * 面板按 960 宽渲染，这一栏只有约 300px。取 `0.26` 让 960 → 250px，
+ * 正好整幅放进去（留出内边距与边框），用户能一眼看到**完整**面板，
+ * 而不是被裁掉右半边的半张图。
+ *
+ * 这一块只是辅助确认；精确对位靠左边的取景框。
+ */
+const panLiveScale = 0.26
 
 /**
  * 保存编辑结果（另存为新图）。
@@ -1766,6 +1819,13 @@ async function copyAll(): Promise<void> {
               >
                 使用
               </button>
+              <button
+                class="ghost"
+                title="拖动图片，决定背景图显示哪一块（cover 会裁掉一部分，默认居中常裁到主体）"
+                @click="openPanEditor(bg)"
+              >
+                取景
+              </button>
               <button class="ghost" title="预览大图" @click="openPreview(bg)">预览</button>
               <button class="ghost" :disabled="bgBusy" @click="openRename(bg)">重命名</button>
               <button class="ghost" @click="downloadBg(bg)">下载</button>
@@ -2101,10 +2161,135 @@ async function copyAll(): Promise<void> {
       @save="saveEdited"
       @cancel="closeEditor"
     />
+
+    <!--
+      背景图取景。只改样式里的 `bg_position`，**不动图片文件**——
+      与上面那个"改图片本身"的编辑器分工不同。见 `BgPositionEditor.vue`。
+    -->
+    <div v-if="panningBg" class="pan-mask" role="dialog" aria-modal="true">
+      <div class="pan-dialog">
+        <header>
+          <div>
+            <h3>调整背景图取景</h3>
+            <p class="dim">
+              按住图片拖动，决定面板显示图片的哪一块。框内即面板实际看到的区域。
+            </p>
+          </div>
+          <div class="controls">
+            <button class="ghost" title="把取景位置复位到图片正中" @click="setBgPosition('50% 50%')">
+              回到正中
+            </button>
+            <button class="ghost" @click="closePanEditor()">完成</button>
+          </div>
+        </header>
+
+        <div class="pan-body">
+          <div class="pan-preview-col">
+            <BgPositionEditor
+              :src="absoluteBg(panningBg.url)"
+              :aspect="panAspect"
+              :position="draft?.bg_position || '50% 50%'"
+              @update="setBgPosition"
+            />
+            <p class="dim mono-line">取景位置：{{ draft?.bg_position || '50% 50%' }}</p>
+          </div>
+
+          <div class="pan-side">
+            <h4>面板里的实际效果</h4>
+            <p class="dim">这一块与 OBS 里显示的一致。</p>
+            <div class="pan-live" :style="{ '--pv-scale': String(panLiveScale) }">
+              <PanelPreview
+                :style="previewResolvedStyle"
+                :page="previewKey === 'all' ? 'all' : previewKey"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+/* ── 背景图取景弹窗 ──────────────────────────────────────────────────── */
+
+.pan-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(90 68 80 / 45%);
+  backdrop-filter: blur(2px);
+}
+
+.pan-dialog {
+  width: min(860px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  padding: 16px 18px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 12px;
+  background: var(--bsr-bg-elevated);
+  box-shadow: 0 18px 48px rgb(90 68 80 / 24%);
+}
+
+.pan-dialog header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.pan-dialog h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.pan-dialog h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+/* 左边取景框 / 右边实际效果 */
+.pan-body {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 780px) {
+  .pan-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.pan-preview-col {
+  min-width: 0;
+}
+
+.mono-line {
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+/*
+ * 「面板里的实际效果」。
+ * 面板按 960 宽渲染，这一栏放不下，所以用固定的小缩放比装进去并裁掉溢出——
+ * 它只是辅助确认，精确对位靠左边的取景框。
+ */
+.pan-live {
+  overflow: hidden;
+  height: 170px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 8px;
+  background: #f6e9ef;
+}
+
 .panels-page {
   display: flex;
   flex-direction: column;

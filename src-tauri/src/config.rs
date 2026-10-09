@@ -328,6 +328,19 @@ pub struct PanelStyleConfig {
     /// 面板用一层 `::before` 承载背景图并设它的 `opacity`，
     /// 所以**不会**连带把文字也变透明。
     pub bg_opacity: f64,
+    /// 背景图在面板里的**取景位置**（CSS `background-position` 的取值）。
+    ///
+    /// ## 为什么需要它
+    /// 面板用 `background-size: cover` 铺图，图片比例与面板不一致时必然要裁掉
+    /// 一部分，而裁哪一部分由 `background-position` 决定。默认 `center`
+    /// 经常正好裁掉主体（人脸、标题），用户需要能自己拖。
+    ///
+    /// 取值是标准 CSS 写法：`"50% 50%"`（默认）、`"20% 80%"`、`"left top"`。
+    /// 存字符串而不是两个数字，是为了让前端直接透传给 CSS，也方便手改配置。
+    ///
+    /// `None` / 空串 = `center`，与不设时行为一致（老配置不受影响）。
+    #[serde(default)]
+    pub bg_position: Option<String>,
     pub font_size: u32,
     pub scale: f64,
     pub limit: usize,
@@ -374,6 +387,8 @@ impl Default for PanelStyleConfig {
             bg_image: None,
             // 1.0 = 完全不透明，与加这个字段之前的行为一致
             bg_opacity: 1.0,
+            // None = center，与加这个字段之前的行为一致
+            bg_position: None,
             font_size: 16,
             scale: 1.0,
             limit: 8,

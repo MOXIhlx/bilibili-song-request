@@ -352,6 +352,18 @@ export interface PanelStyleConfig {
    * 所以**不会**连带把文字也变透明。
    */
   bg_opacity: number
+  /**
+   * 背景图在面板里的**取景位置**（CSS `background-position` 取值）。
+   *
+   * ## 为什么需要它
+   * 面板以 `background-size: cover` 铺图，图片比例与面板不一致时必然裁掉
+   * 一部分，裁哪一部分由它决定。默认 `center` 经常正好裁掉主体
+   * （人脸、标题），所以要能自己拖。
+   *
+   * 标准 CSS 写法：`"50% 50%"`（默认）、`"20% 80%"`、`"left top"`。
+   * `null` / 空串 = `center`（与不设时行为一致）。
+   */
+  bg_position: string | null
   font_size: number
   scale: number
   limit: number

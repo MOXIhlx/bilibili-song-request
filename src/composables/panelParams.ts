@@ -58,6 +58,8 @@ export interface ResolvedPanelStyle {
   bgImage: string | null
   /** 背景图不透明度（0~1，默认 1）。 */
   bgOpacity: number
+  /** 背景图取景位置（CSS `background-position` 写法，空 = `center`）。 */
+  bgPosition: string
   fontSize: number
   /** 字号倍率（**只来自地址**，每个源可以不同）。 */
   scale: number
@@ -148,6 +150,7 @@ export const FALLBACK_STYLE: PanelStyleConfig = {
   track: 'transparent',
   bg_image: null,
   bg_opacity: 1,
+  bg_position: null,
   font_size: 16,
   scale: 1,
   limit: 8,
@@ -184,6 +187,8 @@ export function styleToResolved(
     bgOpacity: Number.isFinite(style.bg_opacity)
       ? Math.min(Math.max(style.bg_opacity, 0), 1)
       : 1,
+    // 空 = center，同样是老配置的兜底
+    bgPosition: (style.bg_position ?? '').trim() || 'center',
     fontSize: style.font_size,
     // 倍率只来自地址；样式里的 scale 作为「没有地址参数时的默认倍率」
     scale: scaleOverride ?? style.scale ?? 1,
@@ -326,6 +331,13 @@ export function styleToCssVars(style: ResolvedPanelStyle): Record<string, string
      * 否则调淡背景会把文字一起变淡，这个功能就没意义了。
      */
     '--panel-bg-opacity': String(style.bgOpacity),
+    /*
+     * 背景图取景位置。
+     *
+     * `cover` 下图片必然被裁，裁哪一块就由它决定——默认 `center` 常常正好
+     * 裁掉主体，所以设置页提供了一个拖动选区的界面来改它。
+     */
+    '--panel-bg-pos': style.bgPosition,
     '--panel-bg': style.transparent
       ? 'transparent'
       : style.theme === 'dark'
