@@ -107,16 +107,29 @@ function applyPreviewOverride(next: PanelStyleConfig | null): void {
 /**
  * 监听设置页推来的草稿样式。
  *
- * 两条路径都保留：
- *  1. `postMessage`——万一将来父子同源（例如把窗口也挂到 17777 上），
- *     这条会立刻工作，不必改代码；
- *  2. `storage` 事件——**当前架构下真正生效的那条**。
+ * ## 关键：收到草稿后必须**写进 `localStorage`**
+ * 设置页与预览跨源、`postMessage` 不通（见上面的实测），所以设置页只把草稿
+ * 发给**桥接页**。桥接页（也是本组件）收到后除了自己应用，还必须写进
+ * `localStorage`——写入方自己不会收到 `storage` 事件，但**其它同源页会**，
+ * 主预览就靠那个事件拿到草稿。
+ *
+ * ⚠️ 早期版本漏了这一步（只应用、不写），所以「实时预览」从来没有生效过。
  */
 function onPreviewMessage(ev: MessageEvent): void {
   if (ev.origin !== window.location.origin) return
   const data = ev.data as { type?: string; style?: PanelStyleConfig } | null
   if (!data || data.type !== 'bsr:preview-style') return
-  applyPreviewOverride(data.style ?? null)
+  const next = data.style ?? null
+  applyPreviewOverride(next)
+  try {
+    if (next) {
+      window.localStorage.setItem(PREVIEW_STYLE_KEY, JSON.stringify(next))
+    } else {
+      window.localStorage.removeItem(PREVIEW_STYLE_KEY)
+    }
+  } catch {
+    // 存储不可用（隐私模式等）：至少桥接页自己能预览
+  }
 }
 
 /** 另一个同源页面改了草稿 → `storage` 事件送达本页。 */

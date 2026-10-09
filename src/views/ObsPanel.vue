@@ -1237,17 +1237,24 @@ const previewLabel = computed(() => {
  * 预览用的**虚拟画布**尺寸。
  *
  * ## 为什么不能直接把 iframe 拉满栏宽
- * 右栏只有 380px 宽。如果把 iframe 宽度设成 380px，面板就会按 380px 的视口
- * 排版——文字换行位置、`wide` 布局的左右分栏比例全都和 OBS 里（通常
- * 1920×1080 的画布）**不一样**，用户看到的就是「预览比例不对」。
+ * 右栏只有约 350px 宽。把 iframe 宽度设成 350px，面板就会按 350px 的视口
+ * 排版——文字换行位置、`wide` 布局的左右分栏比例全都和 OBS 里不一样。
  *
- * 所以：iframe 按固定虚拟宽度 `960` 渲染（接近半个 1080p 画布，文字量
- * 与真实使用接近），再用 `transform: scale()` 等比缩放到栏宽显示。
- * 这样排版与真实一致，视觉上只是"整体缩小"。
+ * ## 字号为什么会"看起来被缩小了"
+ * 面板字号是**固定 px**，而整个预览被 `transform: scale()` 缩到栏宽，
+ * 所以字也跟着缩到同一个比例（`350 / 960 ≈ 0.36`）。
+ *
+ * 这是"等比缩小"的必然结果，本身不是 bug——**但预览的字就该尽可能看得清**。
+ * 面板字号是**相对视口宽度**呈现的，所以把虚拟画布调窄，字在画面里占比就更大、
+ * 缩下来也更清楚。`720` 是折中：既能放下 `wide` 布局的两栏，字又比 960 明显大。
+ *
+ * ⚠️ 代价：`wrap` 布局的换行位置会与 1920 画布下的 OBS 不同。
+ * 但既然预览本来就不能保证与 OBS 逐像素一致（见 `待修问题.md` 第 7 条），
+ * 优先选"看得清"更有用。
  */
-const PREVIEW_CANVAS_W = 960
+const PREVIEW_CANVAS_W = 720
 /** 虚拟画布高度：16:9，与 OBS 画布比例一致。 */
-const PREVIEW_CANVAS_H = 540
+const PREVIEW_CANVAS_H = 405
 
 /** 预览框的实际宽度（由 CSS 决定），用于算缩放比例。 */
 const previewBoxW = ref(0)
@@ -1291,36 +1298,39 @@ const previewFrame = ref<HTMLIFrameElement | null>(null)
 /**
  * 桥接 iframe 的引用。
  *
- * 它开在 `127.0.0.1:17777`（与预览同源），职责只有一个：
- * 收到设置页的 `postMessage` 后把样式写进 localStorage，
- * 借 `storage` 事件广播给主预览——因为设置页与预览跨源，直连不通。
+ * 它开在 `127.0.0.1:17777`（与预览**同源**），职责只有一个：
+ * 收到设置页的 `postMessage` 后把草稿写进 `localStorage`；预览页会因此收到
+ * `storage` 事件并把样式应用上去。
  */
 const bridgeFrame = ref<HTMLIFrameElement | null>(null)
 
 /**
- * 预览 iframe 是否已经加载完。
+ * 预览 iframe 是否可用（桥接页报过到）。
  *
- * 加载完成前 `postMessage` 会发给一个还没挂上监听器的文档，
- * 消息直接丢掉，于是"改颜色没反应"——所以没就绪时先不发，
- * 等 `@load` 触发后补发一次。
+ * 加载完成前 `postMessage` 会发给一个还没挂上监听器的文档，消息直接丢掉，
+ * 于是"改颜色没反应"——所以没就绪时不发，等桥接页报到后补发。
  */
 const previewReady = ref(false)
 
 /**
- * 把当前草稿推给预览。
+ * 把当前草稿推给预览（实时预览）。
  *
- * ## 为什么绕这么一圈（桥接 iframe + localStorage）
+ * ## 为什么要绕「桥接 iframe + localStorage」
  * 预览 iframe 与设置页**不同源**（`127.0.0.1:17777` vs `tauri.localhost`），
- * 被 WebView2 站点隔离到不同进程，实测 `postMessage` **双向都不通**
- * （`contentDocument` 为 null、父子互相收不到消息）。
+ * 被 WebView2 站点隔离到不同进程。实测 `postMessage` **双向都不通**：
+ * ```
+ * iframe.contentDocument → null
+ * 父 → 子、子 → 父          → 均无回音
+ * ```
+ * 所以设置页**没法直接**和预览说话。
  *
- * 于是改成：
- *  1. 设置页向**桥接 iframe**（也开在 17777，与预览同源）发 postMessage；
- *  2. 桥接页把样式写进 `localStorage`；
- *  3. 同源页面会自动收到 `storage` 事件 → 主预览立即应用。
+ * 但 `localStorage` 是**按源共享**且同源页面之间会自动广播 `storage` 事件。
+ * 于是：
+ *  1. 设置页把草稿 `postMessage` 给**桥接 iframe**（开在 17777，同源）；
+ *  2. 桥接页写进 `localStorage`（写入方自己不收 `storage` 事件，但**其它同源页会收到**）；
+ *  3. 主预览页收到事件 → 立即应用草稿样式。
  *
- * 实测这是当前架构下唯一能通的路。桥接页复用了 `/panel`（它已内置
- * 对 `bsr:preview-style` 的处理），不需要新页面。
+ * 桥接页复用了 `/panel`（它已内置这段处理），不需要新增页面。
  */
 function pushPreviewStyle(): void {
   const bridge = bridgeFrame.value
@@ -1331,7 +1341,6 @@ function pushPreviewStyle(): void {
     '*',
   )
 }
-
 
 /**
  * 桥接页报到 → 说明它已经挂上监听器，可以把当前草稿推过去了。
@@ -1350,20 +1359,13 @@ function onBridgeReady(ev: MessageEvent): void {
 onMounted(() => window.addEventListener('message', onBridgeReady))
 onBeforeUnmount(() => window.removeEventListener('message', onBridgeReady))
 
-/** iframe 加载完成后标记就绪并补推一次当前草稿（兜底，主路径是下面的握手）。 */
+/** 预览 iframe 加载完成后重推一次（切面板类型时会重建）。 */
 function onPreviewLoad(): void {
-  previewReady.value = true
   pushPreviewStyle()
 }
 
-
 // 草稿任何字段变化 → 立刻推给预览（深度监听，颜色/字号/布局都算）
 watch(draft, pushPreviewStyle, { deep: true })
-
-// 切换预览的面板类型时 iframe 会重建，重置就绪状态等它 load
-watch(previewUrl, () => {
-  previewReady.value = false
-})
 
 /** 关闭中的面板被预览时，自动切走。 */
 watch(pages, (list) => {
@@ -1756,12 +1758,12 @@ async function copyAll(): Promise<void> {
           >
             <button
               class="bg-thumb"
-              :title="`${bg.name} · 点击编辑`"
+              :title="`${bg.name} · 点击使用这张图`"
               :style="{ backgroundImage: `url(${absoluteBg(bg.url)})` }"
-              @click="openEditor(bg)"
+              @click="pickBackground(bg)"
             >
               <!-- 正在被当前样式使用：给个角标，避免误删 -->
-              <span v-if="draft.bg_image === bg.url" class="bg-badge">在用</span>
+              <span v-if="draft.bg_image === bg.url" class="bg-badge">正在使用</span>
             </button>
             <div class="bg-meta">
               <span class="bg-name" :title="bg.name">{{ bg.name }}</span>
@@ -1775,7 +1777,7 @@ async function copyAll(): Promise<void> {
                 :disabled="draft.bg_image === bg.url"
                 @click="pickBackground(bg)"
               >
-                用它
+                使用
               </button>
               <button class="ghost" title="预览大图" @click="openPreview(bg)">预览</button>
               <button class="ghost" :disabled="bgBusy" @click="openRename(bg)">重命名</button>
@@ -2300,12 +2302,27 @@ async function copyAll(): Promise<void> {
   font-size: 12px;
 }
 
+/*
+ * 页头（标题 + 「重置 / 保存样式」）。
+ *
+ * `position: sticky` 让它**滚动时固定在顶部**——这套设置表单很长，
+ * 改了半天的样式再滚回页顶去点保存很别扭。用户明确要求吸顶。
+ *
+ * `top: 0` + 不透明底色：滚动时下面的内容会从它底下经过，没有底色会叠字。
+ * `z-index` 要高于卡片（卡片没有 z-index，默认 0）。
+ */
 .page-head {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+  margin: -4px 0 0;
+  padding: 10px 0;
+  background: var(--bsr-bg);
 }
 
 .page-head h2 {
@@ -2454,9 +2471,48 @@ async function copyAll(): Promise<void> {
   gap: 4px;
 }
 
+/*
+ * 缩略图下的操作按钮。
+ *
+ * ⚠️ 早期这里只写了 padding 与字号，**没有边框/圆角/底色**——本文件里按钮的
+ * 基础样式都挂在 `.controls button` / `.tabs button` 这类选择器上，而
+ * `.bg-actions` 不在 `.controls` 里，于是这些按钮退回浏览器默认外观
+ * （灰底立体边框），和整套粉白主题明显不搭。
+ *
+ * 现在把基础样式补在这里，观感与 `.controls button` 保持一致。
+ */
 .bg-actions button {
-  padding: 3px 8px;
+  padding: 3px 9px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 6px;
+  background: var(--bsr-bg-elevated);
+  color: var(--bsr-fg);
   font-size: 11.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.bg-actions button:hover:not(:disabled) {
+  border-color: var(--bsr-accent);
+  background: var(--bsr-accent-soft);
+}
+
+.bg-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 删除用危险色，与其它按钮区分，降低误点概率 */
+.bg-actions button.danger {
+  border-color: var(--bsr-danger);
+  background: transparent;
+  color: var(--bsr-danger);
+}
+
+.bg-actions button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bsr-danger) 12%, transparent);
+  color: var(--bsr-danger);
 }
 
 /* ── 图片预览遮罩层 ─────────────────────────────────────────────────── */
