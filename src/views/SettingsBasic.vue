@@ -236,8 +236,8 @@ const ready = computed(() => draft.value !== null)
         <div class="fields">
           <label class="wide">切换策略
             <select v-model="draft.rules.idle_switch_policy">
-              <option value="immediate">立即播放点的歌曲（中断当前空闲歌曲）</option>
-              <option value="after_current">放完当前这首空闲歌曲再播点歌</option>
+              <option value="immediate">立即播放</option>
+              <option value="after_current">等待播放</option>
             </select>
           </label>
         </div>

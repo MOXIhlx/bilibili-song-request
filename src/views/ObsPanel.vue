@@ -127,7 +127,7 @@ async function refreshStyles(): Promise<void> {
 function openCreate(from: string | null): void {
   creatingFrom.value = from
   const base = from ? styles.value.find((s) => s.id === from) : null
-  newStyleName.value = base ? `${base.name} 副本` : '新样式'
+  newStyleName.value = base ? `${base.name} 副本` : '新方案'
 }
 
 /** 确认新建样式。 */
@@ -1618,7 +1618,7 @@ async function copyAll(): Promise<void> {
       <!-- ── 样式列表（命名样式）────────────────────────────────────── -->
       <section class="card">
         <div class="card-head">
-          <h3>样式</h3>
+          <h3>样式方案</h3>
           <div class="controls">
             <button class="ghost" :disabled="styleBusy" @click="openCreate(null)">+ 新建空白</button>
             <button class="ghost" :disabled="styleBusy" @click="openCreate(draft.id)">
@@ -1627,7 +1627,8 @@ async function copyAll(): Promise<void> {
           </div>
         </div>
         <!-- 说明只留一句；"为什么只写 ?style=" 这类设计理由不占版面 -->
-        <p class="dim">改一套样式，所有引用它的 OBS 源一起生效。</p>
+        <p class="dim">自定义方案预设
+        </p>
         <ul class="style-list">
           <li
             v-for="s in styles"
@@ -1640,7 +1641,7 @@ async function copyAll(): Promise<void> {
               <span class="style-info">
                 <span class="style-name">
                   {{ s.name }}
-                  <span v-if="s.id === defaultStyleId" class="tag-default">默认</span>
+                  <span v-if="s.id === defaultStyleId" class="tag-default">使用中</span>
                 </span>
                 <span class="dim">{{ styleSummary(s) }} · <code>{{ s.id }}</code></span>
               </span>
@@ -1653,7 +1654,7 @@ async function copyAll(): Promise<void> {
                 title="没写 ?style= 的源会用它"
                 @click="makeDefault(s)"
               >
-                设为默认
+                使用方案
               </button>
               <button class="ghost" :disabled="styleBusy" @click="openRenameStyle(s)">重命名</button>
               <button
@@ -1693,6 +1694,47 @@ async function copyAll(): Promise<void> {
             <strong>{{ p.label }}</strong>
             <span class="dim">{{ p.desc }}</span>
           </button>
+        </div>
+
+        <h4>画布</h4>
+        <!--
+          画布尺寸 = **你 OBS 浏览器源的实际宽高**。
+          面板排版（换行、wide 分栏）与背景图 cover 的裁切完全由容器尺寸决定，
+          所以这个值必须对得上，否则"预览里看着刚好、OBS 里完全两样"。
+          它**不影响 OBS 的实际显示**，只决定预览按多大渲染。
+        -->
+        <div class="canvas-row">
+          <input
+            type="number"
+            class="canvas-num"
+            :value="previewCanvasW"
+            min="120"
+            max="7680"
+            title="你 OBS 浏览器源的宽度"
+            @change="setCanvasSize(Number(($event.target as HTMLInputElement).value), previewCanvasH)"
+          />
+          <span class="canvas-x">×</span>
+          <input
+            type="number"
+            class="canvas-num"
+            :value="previewCanvasH"
+            min="120"
+            max="4320"
+            title="你 OBS 浏览器源的高度"
+            @change="setCanvasSize(previewCanvasW, Number(($event.target as HTMLInputElement).value))"
+          />
+          <div class="canvas-presets">
+            <button
+              v-for="c in CANVAS_PRESETS"
+              :key="c.label"
+              class="ghost mini-preset"
+              :class="{ active: isCanvasPreset(c.w, c.h) }"
+              :title="`设为 ${c.label}`"
+              @click="setCanvasSize(c.w, c.h)"
+            >
+              {{ c.label }}
+            </button>
+          </div>
         </div>
 
         <h4>颜色</h4>
@@ -2112,47 +2154,6 @@ async function copyAll(): Promise<void> {
               </div>
             </div>
 
-            <!--
-              画布尺寸 = **你 OBS 浏览器源的实际宽高**。
-              面板排版与背景图裁切完全由容器尺寸决定，所以这个值必须对得上，
-              否则"预览里看着刚好、OBS 里完全两样"。
-              见 `PanelPreview.vue` 的 props 说明。
-            -->
-            <div class="canvas-row">
-              <span class="canvas-label">画布</span>
-              <input
-                type="number"
-                class="canvas-num"
-                :value="previewCanvasW"
-                min="120"
-                max="7680"
-                title="你 OBS 浏览器源的宽度"
-                @change="setCanvasSize(Number(($event.target as HTMLInputElement).value), previewCanvasH)"
-              />
-              <span class="canvas-x">×</span>
-              <input
-                type="number"
-                class="canvas-num"
-                :value="previewCanvasH"
-                min="120"
-                max="4320"
-                title="你 OBS 浏览器源的高度"
-                @change="setCanvasSize(previewCanvasW, Number(($event.target as HTMLInputElement).value))"
-              />
-              <div class="canvas-presets">
-                <button
-                  v-for="c in CANVAS_PRESETS"
-                  :key="c.label"
-                  class="ghost mini-preset"
-                  :class="{ active: isCanvasPreset(c.w, c.h) }"
-                  :title="`设为 ${c.label}`"
-                  @click="setCanvasSize(c.w, c.h)"
-                >
-                  {{ c.label }}
-                </button>
-              </div>
-            </div>
-
             <!-- 面板类型切换：一行放下，避免和预览抢高度 -->
             <div class="preview-tabs">
               <button
@@ -2304,10 +2305,10 @@ async function copyAll(): Promise<void> {
             从「{{ styles.find((s) => s.id === creatingFrom)?.name ?? creatingFrom }}」复制一份，
             之后两套各自独立。
           </template>
-          <template v-else>建立一套出厂默认外观的空白样式。</template>
+          <template v-else>建立一套默认外观的空白样式。</template>
         </p>
         <label class="modal-field">
-          样式名
+          方案名
           <input
             v-model="newStyleName"
             maxlength="24"
@@ -2330,7 +2331,7 @@ async function copyAll(): Promise<void> {
       <div class="modal">
         <h4>重命名样式</h4>
         <label class="modal-field">
-          样式名
+          方案名
           <input
             v-model="renameValue"
             maxlength="24"
@@ -2353,7 +2354,7 @@ async function copyAll(): Promise<void> {
     <!-- 删除样式确认 -->
     <div v-if="deletingStyle" class="modal-mask" @click.self="deletingStyle = null">
       <div class="modal">
-        <h4>删除样式</h4>
+        <h4>删除方案</h4>
         <p class="modal-note">
           确定删除 <b>{{ deletingStyle.name }}</b> ？
           <template v-if="deletingStyle.id === defaultStyleId">
@@ -2904,9 +2905,49 @@ async function copyAll(): Promise<void> {
   gap: 6px;
 }
 
+/*
+ * 样式列表右侧的操作按钮。
+ *
+ * ⚠️ 这里原来**只写了 padding 与字号**，没有边框/圆角/底色——于是按钮退回
+ * 浏览器默认外观。表现很有迷惑性：`.danger`（删除）因为全局有规则看着正常，
+ * 而 `.ghost`（使用方案 / 重命名）却带着一条突兀的默认边框，
+ * 同一个列表里的按钮**看起来不像一套**。
+ *
+ * 这是本文件反复出现的同一个坑：按钮的基础样式散落在 `.controls button`
+ * 之类的选择器上，不在其中的就"裸奔"。这里把基础样式补全。
+ */
 .style-ops button {
   padding: 4px 10px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 6px;
+  background: var(--bsr-bg-elevated);
+  color: var(--bsr-fg);
   font-size: 12px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.style-ops button:hover:not(:disabled) {
+  border-color: var(--bsr-accent);
+  background: var(--bsr-accent-soft);
+}
+
+.style-ops button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* 删除按钮：危险色，与其它操作区分，降低误点 */
+.style-ops button.danger {
+  border-color: var(--bsr-danger);
+  background: transparent;
+  color: var(--bsr-danger);
+}
+
+.style-ops button.danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--bsr-danger) 12%, transparent);
+  color: var(--bsr-danger);
 }
 
 /*

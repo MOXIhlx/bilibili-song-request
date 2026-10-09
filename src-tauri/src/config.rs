@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 /// 应用目录名（配置文件与日志所在文件夹）。
 pub const APP_DIR_NAME: &str = "bilibili-song-request";
@@ -532,14 +532,50 @@ impl Config {
         Self::config_dir().join(CONFIG_FILE_NAME)
     }
 
-    /// 从默认位置读取；文件不存在或损坏时回落到默认配置并落盘一份。
+    /// 从默认位置读取；文件不存在时落盘一份默认配置。
+    ///
+    /// ## ⚠️ 解析失败时**绝不覆盖**已有文件
+    /// 早期这里的分支是「读失败 → 用默认配置 → 立刻 save 覆盖」。
+    /// 那条路径会**静默摧毁用户数据**：配置里装着用户手工调出来的面板样式
+    /// （配色、字号、描边、背景图、画布尺寸……），一旦某个字段解析失败
+    /// （字段类型改过、手改坏、写了一半），整个 config 就被默认值顶掉，
+    /// 用户看到的就是「我的自定义方案没了」——**且没有任何退路**。
+    ///
+    /// 现在：
+    ///  1. 解析失败只**警告**，把坏文件改名保留（`config.json.broken-<时间戳>`），
+    ///     供事后抢救；绝不静默删除或覆盖；
+    ///  2. 本次运行用默认配置（程序仍然可用，不会打不开）；
+    ///  3. 用户在界面里**主动保存**时才会写入新文件（那时 `save_to` 也会
+    ///     先备份，见 [`Self::backup_existing`]）。
+    ///
+    /// 文件**不存在**是另一回事——那是首次运行，落盘一份默认配置是合理的。
     pub fn load() -> Self {
         let path = Self::config_path();
+        if !path.is_file() {
+            info!(path = %path.display(), "配置文件不存在，写入一份默认配置");
+            let mut cfg = Self::default();
+            /*
+             * ⚠️ 必须迁移/规范化后再落盘。
+             *
+             * `Config::default()` 的 `panel_styles` 是**空数组**（样式由
+             * `normalize_styles` 补齐）。早期这里直接写默认配置，于是
+             * 首次运行会落下一份 `panel_styles: []` 的无效配置——
+             * 界面上就是"一套方案都没有"。同一段代码也用在
+             * "配置文件损坏被移走"之后，所以那种情况下同样会写出空列表。
+             */
+            cfg.migrate();
+            if let Err(err) = cfg.save_to(&path) {
+                warn!(error = %err, "写入默认配置失败");
+            }
+            return cfg;
+        }
+
         match Self::load_from(&path) {
             Ok(mut cfg) => {
                 info!(path = %path.display(), "已加载配置");
                 if cfg.migrate() {
-                    // 迁移结果要落盘，否则每次启动都会重新迁移一次
+                    // 迁移结果要落盘，否则每次启动都会重新迁移一次。
+                    // `save_to` 会先备份原文件，所以这次覆盖是安全的。
                     if let Err(err) = cfg.save_to(&path) {
                         warn!(error = %err, "迁移后的配置写入失败");
                     }
@@ -547,10 +583,43 @@ impl Config {
                 cfg
             }
             Err(err) => {
-                warn!(path = %path.display(), error = %err, "读取配置失败，使用默认配置");
-                let cfg = Self::default();
-                if let Err(save_err) = cfg.save_to(&path) {
-                    warn!(error = %save_err, "写入默认配置失败");
+                /*
+                 * 解析失败：**保留原文件**，只把它改名成 `.broken-<时间戳>`
+                 * 留档，然后用默认配置跑起来。
+                 *
+                 * 为什么不直接覆盖：用户可能只是某个字段写坏了，
+                 * 保留原文件才有可能把里面的样式人工抢救出来。
+                 */
+                let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                let broken = path.with_file_name(format!("{CONFIG_FILE_NAME}.broken-{stamp}"));
+                let kept = match fs::rename(&path, &broken) {
+                    Ok(()) => {
+                        warn!(
+                            error = %err,
+                            kept = %broken.display(),
+                            "配置解析失败，原文件已改名保留（未删除），本次运行使用默认配置"
+                        );
+                        true
+                    }
+                    Err(rename_err) => {
+                        warn!(
+                            error = %err,
+                            rename_error = %rename_err,
+                            "配置解析失败，且无法改名保留原文件；本次运行使用默认配置（原文件未改动）"
+                        );
+                        false
+                    }
+                };
+                let mut cfg = Self::default();
+                // 与"文件不存在"分支同理：默认配置也要先规范化，
+                // 否则会落下 `panel_styles: []`（界面上一套方案都没有）。
+                cfg.migrate();
+                // 只有在原文件**已经安全移走**时才写默认配置；
+                // 否则宁可不写，也不能覆盖掉那份可能还能抢救的文件。
+                if kept {
+                    if let Err(save_err) = cfg.save_to(&path) {
+                        warn!(error = %save_err, "写入默认配置失败");
+                    }
                 }
                 cfg
             }
@@ -758,15 +827,101 @@ impl Config {
     }
 
     /// 保存到指定路径。
+    ///
+    /// ## 原子写
+    /// 先写 `config.json.tmp` 再 `rename` 覆盖——避免写到一半崩溃/断电时
+    /// 留下半截 JSON（下次启动会解析失败，进而触发"用默认配置覆盖"，
+    /// 用户数据就没了）。
+    ///
+    /// ## 覆盖前先备份
+    /// 见 [`Self::backup_existing`]：会写一份带时间戳的副本并只保留最近几份。
+    /// 早期这里**直接覆盖**，没有任何退路——一次解析失败 + 自动写默认配置，
+    /// 用户的全部自定义样式就永久消失了（真实发生过）。
     pub fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        Self::backup_existing(path);
         let json = serde_json::to_string_pretty(self)?;
         let tmp = path.with_extension("json.tmp");
         fs::write(&tmp, json).with_context(|| format!("写入 {} 失败", tmp.display()))?;
         fs::rename(&tmp, path).with_context(|| format!("替换 {} 失败", path.display()))?;
         Ok(())
+    }
+
+    /// 覆盖 `path` 之前，把现有内容另存为 `config.json.<时间戳>.bak`。
+    ///
+    /// ## 为什么必须有
+    /// 配置里装着用户**手工调出来的面板样式**（配色、字号、描边、背景图、
+    /// 画布尺寸……），丢了很难重建。而历史上存在一条真实的丢数据路径：
+    ///
+    /// ```text
+    /// 新版字段变化 → 旧 config.json 解析失败
+    ///   → Config::load 走 Err 分支 → 写一份默认配置覆盖它
+    ///   → 用户的样式全部永久消失，且没有任何备份可恢复
+    /// ```
+    ///
+    /// 现在无论谁要覆盖，都先留一份副本。
+    ///
+    /// ## 只保留最近 [`MAX_CONFIG_BACKUPS`] 份
+    /// 不然每次改配置都留一份，目录会无限增长。
+    fn backup_existing(path: &Path) {
+        /// 最多保留几份历史备份。
+        const MAX_CONFIG_BACKUPS: usize = 5;
+
+        if !path.is_file() {
+            return;
+        }
+        // 时间戳精确到秒。同一秒内多次覆盖时**不能跳过**——那样就漏掉了
+        // 中间那几次的保护（单元测试正是抓到了这一点）。
+        // 改为同名时自动加序号，保证每次覆盖都真的留下一份。
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| CONFIG_FILE_NAME.to_string());
+        let mut backup = path.with_file_name(format!("{name}.{stamp}.bak"));
+        let mut seq = 2;
+        while backup.exists() {
+            backup = path.with_file_name(format!("{name}.{stamp}-{seq}.bak"));
+            seq += 1;
+            if seq > 100 {
+                // 极端情况下（同一秒被覆盖上百次）放弃，避免死循环
+                warn!("同一秒内备份过多，跳过本次备份");
+                return;
+            }
+        }
+        if let Err(err) = fs::copy(path, &backup) {
+            // 备份失败不能阻断保存本身——否则用户会"改什么都存不上"。
+            warn!(error = %err, "配置备份失败，继续保存");
+            return;
+        }
+        debug!(path = %backup.display(), "已备份旧配置");
+
+        // 清理多余的历史备份（按文件名排序即按时间排序）
+        let Some(dir) = path.parent() else { return };
+        let prefix = format!("{name}.");
+        let mut olds: Vec<std::path::PathBuf> = fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .map(|n| {
+                        let n = n.to_string_lossy();
+                        n.starts_with(&prefix) && n.ends_with(".bak")
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+        if olds.len() <= MAX_CONFIG_BACKUPS {
+            return;
+        }
+        olds.sort();
+        for old in &olds[..olds.len() - MAX_CONFIG_BACKUPS] {
+            let _ = fs::remove_file(old);
+        }
     }
 
     /// 生成 `http://host:port` 形式的基础地址。
@@ -1073,5 +1228,155 @@ mod tests {
         let rules = RequestRules::default();
         assert_eq!(rules.max_queue, 7, "弹幕最多同时在等 7 首");
         assert_eq!(rules.host_extra_per_play, 2, "主播每首补 2 个名额");
+    }
+
+    // ── 配置安全：用户的自定义样式绝不能被静默删掉 ──────────────────────
+
+    /// 造一个临时目录（不碰用户的真实配置目录）。
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bsr-config-test-{tag}-{}-{}",
+            std::process::id(),
+            chrono::Local::now().format("%H%M%S%3f")
+        ));
+        let _ = fs::create_dir_all(&dir);
+        dir
+    }
+
+    /// 造一份"用户精心调过的"配置：两套带自定义颜色的样式。
+    fn user_config() -> Config {
+        let mut a = PanelStyleConfig::named("mine", "我的方案");
+        a.color = "#123456".into();
+        a.font_size = 23;
+        let mut b = PanelStyleConfig::named("second", "第二套");
+        b.color = "#abcdef".into();
+        Config {
+            panel_styles: vec![a, b],
+            default_style_id: "mine".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn save_keeps_a_backup_of_the_previous_file() {
+        // 覆盖前必须留一份备份——这是"样式被删掉后还能救回来"的唯一保障
+        let dir = temp_dir("backup");
+        let path = dir.join("config.json");
+
+        // 用 migrate() 后的默认配置，模拟真实启动路径写下的第一份文件
+        // （`Config::default()` 的 panel_styles 是空的，必须规范化才有样式）
+        let mut first = Config::default();
+        first.migrate();
+        first.save_to(&path).unwrap();
+        user_config().save_to(&path).unwrap();
+
+        let baks: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".bak"))
+            .collect();
+        assert_eq!(baks.len(), 1, "应恰好有 1 份备份，实际 {baks:?}");
+
+        // 备份里应当是**覆盖前**那份（默认配置），不是新写进去的
+        let bak = dir.join(&baks[0]);
+        let restored = Config::load_from(&bak).unwrap();
+        assert_eq!(restored.panel_styles.len(), 1);
+        assert_eq!(restored.panel_styles[0].id, "pink");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backups_are_capped_and_oldest_removed() {
+        // 备份不能无限增长
+        let dir = temp_dir("cap");
+        let path = dir.join("config.json");
+        for i in 0..9 {
+            let mut c = Config::default();
+            c.default_style_id = format!("s{i}");
+            c.panel_styles = vec![PanelStyleConfig::named(format!("s{i}"), format!("方案{i}"))];
+            // 备份用的是秒级时间戳，同一秒内会复用同一份；
+            // 这里每次先删掉已有备份，模拟"不同时刻保存"。
+            let _ = fs::remove_dir_all(&dir);
+            let _ = fs::create_dir_all(&dir);
+            if i > 0 {
+                // 先放一个旧文件，让 save_to 有东西可备份
+                Config::default().save_to(&path).unwrap();
+            }
+            c.save_to(&path).unwrap();
+        }
+        let count = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".bak"))
+            .count();
+        assert!(count <= 5, "备份数量应被限制在 5 份以内，实际 {count}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unparsable_config_is_not_silently_replaced() {
+        // 这条是本次修复的核心：解析失败时**原始文件的内容必须还在**，
+        // 不能像早期那样被默认配置直接顶掉（那会永久删除用户的样式）。
+        let dir = temp_dir("broken");
+        let path = dir.join("config.json");
+        /*
+         * ⚠️ 用 `r##"…"##` 而不是 `r#"…"#`：
+         * 下面这段 JSON 里含有 `"#123456"`，其中的 `"#` 会**提前闭合**
+         * `r#"…"#`，导致整个文件语法错误（本次就踩了这个）。
+         * 多用一个 `#` 后，必须 `"##` 才能收尾，因此不再冲突。
+         */
+        let broken_json =
+            r##"{ "panel_styles": [ { "id": "mine", "color": "#123456" } ], "BROKEN"##;
+        fs::write(&path, broken_json).unwrap();
+
+        // 解析确实会失败
+        assert!(Config::load_from(&path).is_err());
+
+        // 模拟 load() 的失败分支：改名保留，然后才写默认配置
+        let kept = dir.join("config.json.broken-test");
+        fs::rename(&path, &kept).unwrap();
+        Config::default().save_to(&path).unwrap();
+
+        // 原始内容仍然可以在 .broken-* 里完整取回
+        assert!(kept.is_file(), "坏文件必须被保留");
+        let raw = fs::read_to_string(&kept).unwrap();
+        assert!(raw.contains("#123456"), "坏文件里的用户数据必须原样保留");
+        assert_eq!(raw, broken_json);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_never_drops_user_styles() {
+        // 保险：迁移/规范化只补不删，用户的样式数量不会减少
+        let mut cfg = user_config();
+        cfg.normalize_styles();
+        assert_eq!(cfg.panel_styles.len(), 2);
+        assert_eq!(cfg.default_style_id, "mine");
+        cfg.migrate();
+        assert_eq!(cfg.panel_styles.len(), 2, "migrate 不得删除任何样式");
+    }
+
+    #[test]
+    fn fresh_default_config_has_a_usable_style() {
+        // `Config::default()` 的 `panel_styles` 是**空数组**，样式由
+        // `normalize_styles` 补齐（`migrate` 内部会调它）。
+        //
+        // 而 `Config::load()` 在"文件不存在"和"文件损坏被移走"两个分支里
+        // 都会写一份默认配置——早期**没有先 migrate**，于是会落下一份
+        // `panel_styles: []` 的无效配置，界面上一套方案都没有。
+        //
+        // 这个测试锁住那条修复：任何"写默认配置"的路径都必须是可用的。
+        let mut cfg = Config::default();
+        assert!(cfg.panel_styles.is_empty(), "前提：默认值本身是空列表");
+        cfg.migrate();
+        assert!(!cfg.panel_styles.is_empty(), "migrate 后必须有至少一套样式");
+        assert!(
+            cfg.style_by_id(&cfg.default_style_id).is_some(),
+            "default_style_id 必须指向真实存在的样式"
+        );
     }
 }

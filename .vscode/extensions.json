@@ -1,0 +1,16 @@
+{
+  // 打开这个项目时 VSCode 会提示安装这些扩展。
+  "recommendations": [
+    // Vue 单文件组件的语法高亮与类型支持
+    "Vue.volar",
+    // Rust 语言支持（补全、跳转、内联错误）
+    "rust-lang.rust-analyzer",
+    // 调试 Rust（launch.json 里 "type": "lldb" 需要它）
+    "vadimcn.vscode-lldb",
+    // Tauri 官方扩展（命令面板里提供 Tauri 相关操作）
+    "tauri-apps.tauri-vscode",
+    // 编辑器配置统一（缩进、换行符），避免 CRLF/LF 混用
+    "EditorConfig.EditorConfig"
+  ],
+  "unwantedRecommendations": []
+}

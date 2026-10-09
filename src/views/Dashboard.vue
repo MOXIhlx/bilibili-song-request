@@ -1308,7 +1308,6 @@ function formatTime(iso: string): string {
           >
             {{ platformLabel(platform) }} {{ platformLoggedIn(platform) ? '已登录' : '未登录' }}
           </span>
-          <span class="dim">· Cookie 存在系统凭据库，换机器要重新登录</span>
         </p>
 
         <template v-if="isExpanded('music', !anyMusicLoggedIn)">
@@ -1419,7 +1418,6 @@ function formatTime(iso: string): string {
         </ul>
         <p v-else class="empty">
           暂无弹幕。连接 B 站身份码后这里会实时滚动。
-          想验证链路可以用「设置 → 基础」页的链路自测注入一条。
         </p>
       </article>
 
@@ -1585,12 +1583,12 @@ function formatTime(iso: string): string {
         </div>
       </div>
       <!-- 有人点歌时怎么切 -->
-      <h4>有人点歌时</h4>
+      <h4>点歌策略</h4>
       <div v-if="draft" class="fields">
         <label class="wide">切换策略
           <select v-model="draft.rules.idle_switch_policy">
-            <option value="immediate">立即播放点的歌曲（中断当前空闲歌曲）</option>
-            <option value="after_current">放完当前这首空闲歌曲再播点歌</option>
+            <option value="immediate">立即播放</option>
+            <option value="after_current">等待播放</option>
           </select>
         </label>
       </div>
@@ -1786,7 +1784,7 @@ function formatTime(iso: string): string {
           <input v-model="blacklistForm.artist" placeholder="留空 = 所有版本" @keyup.enter="submitBlacklist()" />
         </label>
         <label>备注（可选）
-          <input v-model="blacklistForm.note" placeholder="为什么拉黑" @keyup.enter="submitBlacklist()" />
+          <input v-model="blacklistForm.note" placeholder="" @keyup.enter="submitBlacklist()" />
         </label>
         <button :disabled="!blacklistForm.title.trim() || blacklistBusy" @click="submitBlacklist()">
           加入黑名单
