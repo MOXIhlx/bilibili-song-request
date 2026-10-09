@@ -167,6 +167,18 @@ const ready = computed(() => draft.value !== null)
       刻意放在最前面：它改的是**整个软件的观感**，一眼就能看到效果，
       而下面的服务器/规则是"配一次就不动"的东西。
     -->
+    <!-- 右下角浮动保存：页头不吸顶了，滚到下面也能直接存 -->
+    <button
+      v-if="ready && draft"
+      class="floating-save"
+      :class="{ 'is-saved': saved }"
+      :disabled="saving"
+      title="保存配置（不必滚回顶部）"
+      @click="saveSettings()"
+    >
+      {{ saving ? '保存中…' : saved ? '✓ 已保存' : '保存' }}
+    </button>
+
     <section v-if="ready && draft" class="card">
       <h4>软件外观</h4>
       <div class="fields">
@@ -299,29 +311,62 @@ const ready = computed(() => draft.value !== null)
 /*
  * 页头（标题 + 「重置 / 保存」）。
  *
- * 与 `ObsPanel.vue` 的 `.page-head` 保持一致：吸在**导航条下方**
- * （`top: var(--bsr-nav-h)`，导航自己 sticky 在 `top: 0`），
- * 半透明 + 模糊，避免滚轮往下时把卡片整块盖住。
- * 这里以前**没有吸顶**，于是同一个软件里两个设置页行为不一致。
+ * ⚠️ **不吸顶**，与 `ObsPanel.vue` 保持一致。
+ *
+ * 曾经吸顶过一阵，但那个设置页里右栏预览也是 sticky：两个 sticky 元素的
+ * 吸附时机必然不同（右栏在文档流里位于页头下方，页头吸住后它还得再往上走
+ * 一段才贴得住），滚动时会「晃一下」。**少吸一层**才治本。
+ *
+ * 保存按钮因此改到了右下角浮动（见 `.floating-save`）。
  */
 .page-head {
-  position: sticky;
-  top: var(--bsr-nav-h, 51px);
-  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
   padding: 6px 0;
-  background: color-mix(in srgb, var(--bsr-bg) 78%, transparent);
-  backdrop-filter: blur(6px);
-  border-bottom: 1px solid var(--bsr-border);
 }
 
 .page-head h2 {
   margin: 0;
   font-size: 15px;
+}
+
+/*
+ * 右下角浮动的「保存」。
+ * 页头不吸顶后，滚到下面改设置时靠它保存，不必滚回顶部。
+ */
+.floating-save {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  padding: 9px 16px;
+  border: 1px solid var(--bsr-accent);
+  border-radius: 999px;
+  background: var(--bsr-accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--bsr-accent) 38%, transparent);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease, background 0.12s ease;
+}
+
+.floating-save:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 9px 26px color-mix(in srgb, var(--bsr-accent) 46%, transparent);
+}
+
+.floating-save:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.floating-save.is-saved {
+  background: var(--bsr-success);
+  border-color: var(--bsr-success);
 }
 
 .card {

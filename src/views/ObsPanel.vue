@@ -2370,6 +2370,22 @@ async function copyAll(): Promise<void> {
     </div>
 
     <!--
+      右下角浮动的「保存样式」。
+      页头不吸顶了，所以滚到下面改完样式时靠它保存。
+      只在「OBS 面板」子标签显示（背景图库页没有样式可存）。
+    -->
+    <button
+      v-if="ready && draft && !showBackgroundsOnly"
+      class="floating-save"
+      :class="{ 'is-saved': saved }"
+      :disabled="saving"
+      title="保存当前样式（改完样式不用滚回顶部）"
+      @click="save()"
+    >
+      {{ saving ? '保存中…' : saved ? '✓ 已保存' : '保存样式' }}
+    </button>
+
+    <!--
       背景图裁剪编辑器。
       变换（旋转/缩放/镜像）与裁剪都**烘焙**进导出的 PNG，另存为新图，
       原图保留；保存成功后自动设为当前样式的背景图。
@@ -2654,15 +2670,20 @@ async function copyAll(): Promise<void> {
 
 .editor-aside {
   /*
-   * 吸附：这是「调样式还得滚下去看」的解法。
+   * 吸附：这是「调样式还得滚下去看」的解法——调样式时预览始终可见。
    *
-   * `top` 必须等于**导航 + 页头**的高度之和（两者都在它上方吸顶），
-   * 否则预览会被压到它们底下、或往上顶出去一截。
-   * 这两个高度由 `base.css` 的 `--bsr-nav-h` / `--bsr-page-head-h` 给出，
-   * 改页头高度时不要在这里写魔数。
+   * `top` **只等于导航高度**：页头已经不吸顶了（见上面 `.page-head` 的说明），
+   * 所以右栏直接贴在导航条下面即可。
+   *
+   * ⚠️ 实测关系：sticky 的 `top: X` 最终停在 `45 + X`（45 是滚动容器
+   * 客户区上边）。导航 `top:0` 停 45、高 50、底 95；这里 `top: 51` 停在 96，
+   * 正好贴住导航底且留 1px 缝。
+   *
+   * 早期写成 `calc(导航 + 页头)`，公式本身没错，但因为页头在文档流里本就
+   * 在右栏上方 36px，**两者必然不同步吸附**，滚动时会"晃一下"。
    */
   position: sticky;
-  top: calc(var(--bsr-nav-h, 51px) + var(--bsr-page-head-h, 36px));
+  top: var(--bsr-nav-h, 51px);
 }
 
 .preview-card {
@@ -2953,39 +2974,88 @@ async function copyAll(): Promise<void> {
 /*
  * 页头（标题 + 「重置 / 保存样式」）。
  *
- * ## 为什么吸顶
- * 这套设置表单很长，改了半天的样式再滚回页顶去点保存很别扭。
+ * ## ⚠️ 这里**故意不吸顶**
+ * 吸顶试过两版都有问题：
  *
- * ## 位置的三个要点
- *  1. `top: var(--bsr-nav-h)` —— 吸在**导航条下方**，不是窗口顶部。
- *     导航自己也是 sticky（`top: 0`），两者叠着才对得齐；写 0 会互相压住。
- *  2. `z-index: 20` **低于**导航的 30，否则页头会盖在导航上面。
- *  3. 第一版用了不透明底色（`background: var(--bsr-bg)`），结果滚轮往下时
- *     下面的卡片从它底下经过被**整块盖住**——用户反馈「这一条挡住我往下滚动的界面」。
- *     现在改为半透明 + `backdrop-filter` 模糊，内容能透出来，文字仍可读。
+ * **第一版**：`position: sticky` + **不透明底色**。滚轮往下时下面的卡片从它
+ * 底下经过被整块盖住——用户反馈「这一条挡住我往下滚动的界面」。
  *
- * 另外压紧了内边距、标题缩小，尽量少占高度。
+ * **第二版**：改成半透明 + 模糊后不挡了，但仍然"晃"。实测原因不在样式，
+ * 而在**结构与文档流**：
+ *
+ * ```text
+ * sticky 的 top 值 X → 最终停在 (45 + X)，45 是滚动容器的客户区上边
+ * 导航 top:0   → 停 45，高 50，底 95
+ * 页头 top:51  → 停 96          （贴导航底，正确）
+ * 右栏 top:87  → 停 132         （贴页头底，正确）
+ * ```
+ *
+ * 每个值单独看都对，但**吸附时机不同**：页头在 `scrollTop≈36` 吸住，
+ * 右栏要到 `≈56`。中间那 20px 里页头已固定、右栏还在继续上滑，
+ * 于是「晃动一下才吸附」。
+ *
+ * 根因是**文档流**:右栏本来就在页头下方 36px，页头吸住后它必须再往上走
+ * 36px 才能贴到页头底——所以它**必然晚吸附**，调 `top` 只能缓解、不能消除。
+ *
+ * 结论：要让两者同步，只能**少吸一层**。这里选择保留右栏吸附（调样式时
+ * 预览始终可见，那是它存在的意义），页头改为**随内容滚走**；
+ * 「保存样式」改用右下角浮动按钮，任何时候都能点到。
  */
 .page-head {
-  position: sticky;
-  top: var(--bsr-nav-h, 51px);
-  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  margin: 0;
+  margin: 0 0 4px;
   padding: 6px 0;
-  /* 半透明：内容能透出来，不再是"一堵墙" */
-  background: color-mix(in srgb, var(--bsr-bg) 78%, transparent);
-  backdrop-filter: blur(6px);
-  border-bottom: 1px solid var(--bsr-border);
 }
 
 .page-head h2 {
   margin: 0;
   font-size: 15px;
+}
+
+/*
+ * 右下角浮动的「保存样式」。
+ *
+ * 页头不再吸顶后，「滚到下面改完样式还要滚回顶部点保存」就成了新问题——
+ * 这个浮动按钮解决它。
+ *
+ * `z-index` 高于右栏预览（20）与导航（30）：它是操作入口，不能被盖住。
+ */
+.floating-save {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  padding: 9px 16px;
+  border: 1px solid var(--bsr-accent);
+  border-radius: 999px;
+  background: var(--bsr-accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--bsr-accent) 38%, transparent);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease, background 0.12s ease;
+}
+
+.floating-save:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 9px 26px color-mix(in srgb, var(--bsr-accent) 46%, transparent);
+}
+
+.floating-save:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 保存成功时短暂变绿，给一个不打扰的反馈 */
+.floating-save.is-saved {
+  background: var(--bsr-success);
+  border-color: var(--bsr-success);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--bsr-success) 38%, transparent);
 }
 
 .card {
