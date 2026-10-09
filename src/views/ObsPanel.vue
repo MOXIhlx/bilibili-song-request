@@ -1288,12 +1288,38 @@ onBeforeUnmount(() => {
   previewRO?.disconnect()
 })
 
-/** 预览用的画布尺寸：按 16:9 取满容器宽度，并封顶以免过高。 */
-const previewBox = computed(() => {
+/** 预览用的画布尺寸（与 `PanelPreview.vue` 里的常量一致）。 */
+const PREVIEW_CANVAS_W = 960
+const PREVIEW_CANVAS_H = 540
+
+/**
+ * 「1:1 实际大小」开关。
+ *
+ * ## 为什么需要它
+ * 右栏只有约 350px 宽，等比缩略后缩放比约 0.36，字自然小。
+ * **但那正是真实 OBS 源里的样子**——直接把预览的字放大，会让预览骗人
+ * （预览里看着刚好，OBS 里小一半）。
+ *
+ * 所以保留"等比缩略"作为默认（版式真实），另给一个 1:1 档：
+ * 按 960×540 真实渲染、超出容器就滚动。这样"看得清"与"等于 OBS"
+ * 可以同时成立，用户自己切换，不用猜哪个是真的。
+ */
+const previewActualSize = ref(false)
+
+/** 等比档的缩放比；1:1 档恒为 1。 */
+const previewScale = computed(() => {
+  if (previewActualSize.value) return 1
   const w = previewBoxSize.value.w
-  if (!w) return { w: 480, h: 270 }
-  return { w, h: Math.round((w * 9) / 16) }
+  if (!w) return 0.4
+  return Math.min(w / PREVIEW_CANVAS_W, 1)
 })
+
+/** 等比档下容器需要的高度（1:1 档由内容自己撑，交给滚动）。 */
+const previewBoxHeight = computed(() =>
+  previewActualSize.value
+    ? 420
+    : Math.round((previewBoxSize.value.w * PREVIEW_CANVAS_H) / PREVIEW_CANVAS_W) || 270,
+)
 
 /**
  * 预览用的**已解析样式**——直接来自当前草稿。
@@ -1838,6 +1864,19 @@ async function copyAll(): Promise<void> {
           <section class="card preview-card">
             <div class="card-head">
               <h3>预览 · {{ previewLabel }}</h3>
+              <div class="controls">
+                <button
+                  class="ghost"
+                  :title="
+                    previewActualSize
+                      ? '切回等比缩略（整块都看得见，版式与 OBS 一致）'
+                      : '按 960×540 真实尺寸显示，超出部分可滚动——这是 OBS 里的实际大小'
+                  "
+                  @click="previewActualSize = !previewActualSize"
+                >
+                  {{ previewActualSize ? '适应宽度' : '1:1 实际大小' }}
+                </button>
+              </div>
             </div>
             <!-- 面板类型切换：一行放下，避免和预览抢高度 -->
             <div class="preview-tabs">
@@ -1856,16 +1895,27 @@ async function copyAll(): Promise<void> {
               iframe 与设置页跨源，既做不到"改样式立刻可见"，
               宽度也和一个真实的 OBS 画布差太远。见 `PanelPreview.vue`。
             -->
-            <div ref="previewBoxEl" class="preview-frame">
+            <div
+              ref="previewBoxEl"
+              class="preview-frame"
+              :class="{ 'is-actual': previewActualSize }"
+              :style="{
+                '--pv-scale': String(previewScale),
+                height: `${previewBoxHeight}px`,
+              }"
+            >
               <PanelPreview
                 :style="previewResolvedStyle"
                 :page="previewKey === 'all' ? 'all' : previewKey"
-                :width="previewBox.w"
-                :height="previewBox.h"
               />
             </div>
             <p class="dim preview-hint">
-              预览用的是示例数据，样式与 OBS 完全同源；改左边任一项它都会立刻变。
+              <template v-if="previewActualSize">
+                1:1 实际大小，可滚动——<strong>这就是 OBS 里的真实尺寸</strong>。
+              </template>
+              <template v-else>
+                等比缩略，版式与 OBS 一致；字偏小属正常（= 真实源里的字大小）。
+              </template>
             </p>
           </section>
         </aside>
@@ -2152,10 +2202,43 @@ async function copyAll(): Promise<void> {
  * 1920×1080——把 16:9 的内容塞进近方形窗口，用户看到的就是「预览比例不对」。
  * 现在宽度由栏宽决定、高度按 16:9 自动算，比例与 OBS 一致。
  */
+/*
+ * 预览容器（两栏布局的右栏）。
+ *
+ * 高度由内联样式给出：
+ *  - 等比档：按容器宽度 × 9/16 算，正好放下缩放后的画布；
+ *  - 1:1 档：给一个固定高度（420px），由内容自己滚动。
+ *
+ * 这里**不写 aspect-ratio**——它只在等比档成立，1:1 档会把容器压变形。
+ */
 .preview-frame {
   width: 100%;
-  aspect-ratio: 16 / 9;
-  height: auto;
+  border: 1px solid var(--bsr-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #f6e9ef;
+}
+
+/*
+ * 1:1 实际大小：画布按 960×540 原尺寸渲染，容器放不下就滚动。
+ *
+ * 用 `overflow: auto` 而不是缩放——这样量到的字号/换行**与 OBS 完全一致**，
+ * 是唯一"绝对可信"的预览模式。
+ */
+.preview-frame.is-actual {
+  overflow: auto;
+  /* 棋盘格：透明背景是否生效一眼可见（对应 OBS 里勾选"透明背景"） */
+  background-image:
+    linear-gradient(45deg, rgba(255, 111, 165, 0.12) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(255, 111, 165, 0.12) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(255, 111, 165, 0.12) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(255, 111, 165, 0.12) 75%);
+  background-size: 18px 18px;
+  background-position:
+    0 0,
+    0 9px,
+    9px -9px,
+    -9px 0;
 }
 
 /*
@@ -3064,16 +3147,11 @@ p.warn {
 }
 
 /*
- * 预览舞台：按虚拟画布尺寸（960×540）渲染，再等比缩放到栏宽。
- *
- * 舞台本身被 `transform` 缩放，**不参与正常流的高度计算**，
- * 所以外层 `.preview-frame` 用 `aspect-ratio: 16/9` 自己撑开高度。
+ * 预览舞台：由 `PanelPreview.vue` 内部负责（它用 `zoom: var(--pv-scale)`）。
+ * 这里只保留 `.transparent` 的棋盘格——
+ * 面板自身的 `bg` 是 transparent 时，预览必须有可见底纹，
+ * 否则"透明"和"忘了设背景"看起来一样。
  */
-.preview-stage {
-  /* 缩放后仍在左上角对齐 */
-  will-change: transform;
-}
-
 .preview-frame.transparent {
   /* 棋盘格用浅粉灰：既是"透明"的通用视觉约定，又和粉白主题协调 */
   background-image:

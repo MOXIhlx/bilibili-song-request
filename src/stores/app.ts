@@ -6,10 +6,11 @@
  * 再由 WS 推送做最终一致（避免前端做乐观更新导致队列顺序错乱）。
  */
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import * as api from '@/api'
 import { ApiNotice } from '@/api'
 import { createRealtimeClient, type RealtimeClient } from '@/api/realtime'
+import { applyUiTheme } from '@/composables/uiTheme'
 import type {
   AppState,
   Config,
@@ -126,6 +127,21 @@ export const useAppStore = defineStore('app', () => {
     } finally {
       loading.value = false
     }
+
+    /*
+     * 把界面配色（`ui_theme`）写成 `:root` 上的 CSS 变量。
+     *
+     * 放在 store 里而不是 `main.ts`：这样它跟随 `config` 的任何变化——
+     * 不只是启动时那一次，也包括用户在设置页改完保存后的那一刻。
+     * 各视图都通过 `var(--bsr-*)` 引用这些变量，所以改一处，
+     * 「除 OBS 面板外所有按钮和界面」自动跟随（面板用的是独立的
+     * `--panel-*` 变量，不受影响）。
+     */
+    watch(
+      () => config.value?.ui_theme,
+      (theme) => applyUiTheme(theme),
+      { immediate: true, deep: true },
+    )
 
     if (!client) {
       client = createRealtimeClient({

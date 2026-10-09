@@ -1794,6 +1794,22 @@ async fn api_blacklist_remove(
 ///
 /// 黑名单增删都走这一套，避免出现「只改内存没落盘」这类不一致。
 fn save_config(ctx: &ServerCtx, next: &Config) -> Result<(), ApiError> {
+    /*
+     * 净化界面配色后再落盘。
+     *
+     * 这两个颜色会被前端直接写进 `:root` 的 CSS 变量，非法值会让**整套**
+     * 变量失效、界面失去全部颜色（比"配色难看"严重得多）。
+     *
+     * 放在这里是因为 `save_config` 是**所有**保存路径的唯一出口
+     * （PUT /api/config、黑名单增删、背景图改名等），一处收口即可，
+     * 不必逐个接口去挡。
+     */
+    let mut sanitized = next.clone();
+    if sanitized.ui_theme.sanitize() {
+        warn!("界面配色中存在非法颜色，已恢复默认值后再保存");
+    }
+    let next = &sanitized;
+
     next.save_to(&ctx.config_path)
         .map_err(|e| ApiError::internal(format!("保存配置失败：{e}")))?;
     *ctx.config.write().unwrap_or_else(|e| e.into_inner()) = next.clone();

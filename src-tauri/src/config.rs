@@ -45,6 +45,75 @@ impl Default for ServerConfig {
     }
 }
 
+/// **软件界面**（桌面窗口 / 浏览器控制台）的主题配色。
+///
+/// ## 为什么只有两个颜色
+/// 需求是"不需要添加其他功能，只要能改这两颜色就行"。其余配色
+/// （边框、次要文字、浅色底、文字色）由前端按这两个颜色**推导**出来，
+/// 不让用户去调十来个变量。
+///
+/// ## 为什么不影响 OBS 面板
+/// 面板有自己独立的一套 `--panel-*` 变量（随样式存储，见
+/// [`PanelStyleConfig`]）。本结构只作用于软件自身的界面。
+///
+/// 默认值就是原有的粉白配色，所以老配置不带这个字段时外观完全不变。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiThemeConfig {
+    /// 主题色（强调色）：按钮、选中态、链接、进度条。
+    pub accent: String,
+    /// 界面背景色。
+    pub bg: String,
+}
+
+impl Default for UiThemeConfig {
+    fn default() -> Self {
+        // 与 `src/styles/base.css` 的出厂值一致：
+        // 强调色用正粉；底色用极浅的暖粉（不是纯白，长时间看不刺眼）。
+        Self {
+            accent: "#ff6fa5".to_string(),
+            bg: "#fff5f9".to_string(),
+        }
+    }
+}
+
+/// 判断是否是可接受的 CSS 颜色字面量（只收 `#rgb` / `#rrggbb`）。
+///
+/// ## 为什么要校验
+/// 这两个值会被前端直接写进 `:root` 的 CSS 变量。若允许任意字符串，
+/// 一个手改坏的 `config.json`（或一次误调 API）就能把整套变量设成
+/// 非法值——**整个界面会失去全部颜色**，比"配色难看"严重得多。
+/// 前端 `resolveUiTheme` 也有回落，这里再加一道，保证落盘的配置本身是干净的。
+fn is_hex_color(value: &str) -> bool {
+    let v = value.trim();
+    let Some(hex) = v.strip_prefix('#') else {
+        return false;
+    };
+    if hex.len() != 3 && hex.len() != 6 {
+        return false;
+    }
+    hex.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+impl UiThemeConfig {
+    /// 把非法颜色修回默认值，返回是否发生了修改。
+    ///
+    /// 空字符串也一并修掉：它多半来自"字段被手动清空"，而不是用户想要无色。
+    pub fn sanitize(&mut self) -> bool {
+        let mut changed = false;
+        let default = Self::default();
+        if !is_hex_color(&self.accent) {
+            self.accent = default.accent;
+            changed = true;
+        }
+        if !is_hex_color(&self.bg) {
+            self.bg = default.bg;
+            changed = true;
+        }
+        changed
+    }
+}
+
 /// B 站直播开放平台（身份码模式）配置。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -341,6 +410,12 @@ pub struct Config {
     pub server: ServerConfig,
     pub bilibili: BilibiliConfig,
     pub rules: RequestRules,
+    /// 软件界面（桌面窗口 / 控制台）的主题配色。
+    ///
+    /// 与 OBS 面板的 `panel_styles` **完全独立**：面板样式管的是 OBS 里
+    /// 显示什么，这里管的是软件自己长什么样。
+    #[serde(default)]
+    pub ui_theme: UiThemeConfig,
     /// 面板样式列表（命名样式）。
     ///
     /// ## 为什么从「单个 panel 对象」改成数组
@@ -492,6 +567,12 @@ impl Config {
         }
         // 补齐 id/name、去掉重复 id、修正默认样式指向
         if self.normalize_styles() {
+            changed = true;
+        }
+        // 界面配色：把非法颜色（手改坏 / 被清空 / 非十六进制）修回默认，
+        // 否则前端会拿到无法解析的值，整套 CSS 变量失效、界面失去颜色
+        if self.ui_theme.sanitize() {
+            info!("配置已迁移：界面配色中存在非法颜色，已恢复默认值");
             changed = true;
         }
 
@@ -656,6 +737,58 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+#[test]
+    fn ui_theme_defaults_are_the_original_pink_white() {
+        // 默认值必须与前端 base.css 的出厂配色一致，
+        // 否则老配置（不带 ui_theme 字段）升级后外观会变
+        let t = UiThemeConfig::default();
+        assert_eq!(t.accent, "#ff6fa5");
+        assert_eq!(t.bg, "#fff5f9");
+        assert!(!t.clone().sanitize(), "默认值本身应当是合法的，不该被修改");
+    }
+
+    #[test]
+    fn ui_theme_sanitize_repairs_invalid_colors() {
+        // 非法颜色会把前端整套 CSS 变量搞失效，必须修回默认值
+        for bad in ["", "red", "ff6fa5", "#ff6fa", "#gggggg", "rgb(1,2,3)"] {
+            let mut t = UiThemeConfig {
+                accent: bad.to_string(),
+                bg: bad.to_string(),
+            };
+            assert!(t.sanitize(), "{bad:?} 应被判为非法并修正");
+            assert_eq!(t.accent, UiThemeConfig::default().accent);
+            assert_eq!(t.bg, UiThemeConfig::default().bg);
+        }
+    }
+
+    #[test]
+    fn ui_theme_sanitize_accepts_short_and_long_hex() {
+        // #rgb 与 #rrggbb 都是合法 CSS 颜色，不应被改掉
+        for good in ["#abc", "#ABC", "#a1b2c3", "  #ffffff  "] {
+            let mut t = UiThemeConfig {
+                accent: good.to_string(),
+                bg: good.to_string(),
+            };
+            assert!(!t.sanitize(), "{good:?} 是合法颜色，不该被修改");
+            assert_eq!(t.accent, good);
+        }
+    }
+
+    #[test]
+    fn migrate_repairs_invalid_ui_theme() {
+        // 手改坏的 config.json 在启动迁移时也应被修好
+        let mut cfg = Config {
+            ui_theme: UiThemeConfig {
+                accent: "not-a-color".into(),
+                bg: "".into(),
+            },
+            ..Default::default()
+        };
+        assert!(cfg.migrate());
+        assert_eq!(cfg.ui_theme.accent, UiThemeConfig::default().accent);
+        assert_eq!(cfg.ui_theme.bg, UiThemeConfig::default().bg);
+    }
 
     #[test]
     fn migrate_bumps_legacy_default_max_queue() {

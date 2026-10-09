@@ -16,6 +16,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { getConfig } from '@/api'
 import { clonePlain } from '@/composables/panelParams'
+import { applyUiTheme, DEFAULT_UI_THEME } from '@/composables/uiTheme'
 import { showMessage } from '@/stores/message'
 import { useAppStore } from '@/stores/app'
 import NavTabs from '@/components/NavTabs.vue'
@@ -32,11 +33,35 @@ const saved = ref(false)
 /** 排障用的弹幕文本。 */
 const simulateText = ref('点歌 你还在不在 梁静茹')
 
+/**
+ * 改界面配色（主题色 / 背景色）。
+ *
+ * 只改草稿，**保存后才落盘**——与页面上其它设置一致。
+ * 但预览是实时的：store 里 watch 了 `config.ui_theme`，而草稿不在 store 里，
+ * 所以这里额外**即时预览**一次，让用户边拖取色器边看效果，
+ * 点「重置」时会回到已保存的配色。
+ */
+function setUiColor(key: 'accent' | 'bg', value: string): void {
+  if (!draft.value) return
+  draft.value.ui_theme = { ...draft.value.ui_theme, [key]: value }
+  applyUiTheme(draft.value.ui_theme)
+}
+
+/** 恢复出厂配色（粉白）。 */
+function resetUiTheme(): void {
+  if (!draft.value) return
+  draft.value.ui_theme = { ...DEFAULT_UI_THEME }
+  applyUiTheme(draft.value.ui_theme)
+}
+
 /** 重置为已保存的配置。 */
 function resetDraft(): void {
   // 必须用 clonePlain 而不是 structuredClone：store.config 是响应式代理，
   // 后者在 WebView2 下会直接抛（本页曾因此永久停在「正在加载配置…」）
   draft.value = store.config ? clonePlain(store.config) : null
+  // 配色是"边拖边看"的即时预览，重置时必须把界面颜色也退回去，
+  // 否则草稿回退了、界面还留着刚才试的颜色。
+  if (draft.value) applyUiTheme(draft.value.ui_theme)
 }
 
 /**
@@ -106,6 +131,39 @@ const ready = computed(() => draft.value !== null)
         </button>
       </div>
     </div>
+
+    <!--
+      软件外观。
+      刻意放在最前面：它改的是**整个软件的观感**，一眼就能看到效果，
+      而下面的服务器/规则是"配一次就不动"的东西。
+    -->
+    <section v-if="ready && draft" class="card">
+      <h4>软件外观</h4>
+      <div class="fields">
+        <label>主题色
+          <input
+            type="color"
+            :value="draft.ui_theme.accent"
+            @input="setUiColor('accent', ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+        <label>背景色
+          <input
+            type="color"
+            :value="draft.ui_theme.bg"
+            @input="setUiColor('bg', ($event.target as HTMLInputElement).value)"
+          />
+        </label>
+      </div>
+      <div class="controls">
+        <button class="ghost" title="恢复为出厂的粉白配色" @click="resetUiTheme()">
+          恢复默认
+        </button>
+      </div>
+      <p class="dim">
+        只影响软件界面，不影响 OBS 面板；文字深浅会自动适配背景。
+      </p>
+    </section>
 
     <section class="card">
       <p v-if="draftError" class="err">读取配置失败：{{ draftError }}</p>

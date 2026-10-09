@@ -399,12 +399,31 @@ export interface Config {
   server: ServerConfig
   bilibili: BilibiliConfig
   rules: RequestRules
+  /**
+   * **软件界面**（桌面窗口 / 控制台）的主题配色。
+   *
+   * 与 OBS 面板的 `panel_styles` **完全独立**：面板样式管 OBS 里显示什么，
+   * 这里管软件自己长什么样。只有两个颜色，其余由前端推导（见 `useUiTheme`）。
+   */
+  ui_theme: UiThemeConfig
   /** 命名面板样式列表（至少一套）。 */
   panel_styles: PanelStyleConfig[]
   /** 默认样式 id；指向不存在时面板回落到列表第一项。 */
   default_style_id: string
   /** 点歌黑名单（阶段 9）。 */
   blacklist: BlacklistEntry[]
+}
+
+/**
+ * 软件界面的主题配色（对应后端 `config.rs` 的 `UiThemeConfig`）。
+ *
+ * 默认值即原有的粉白配色；老配置不带这个字段时外观完全不变。
+ */
+export interface UiThemeConfig {
+  /** 主题色（强调色）：按钮、选中态、链接、进度条。 */
+  accent: string
+  /** 界面背景色。 */
+  bg: string
 }
 
 /** WS /ws 推送的消息封包。 */

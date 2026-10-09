@@ -22,11 +22,14 @@
  * 现在改为**本地渲染 [`PanelView`]**：草稿一改立刻重渲染（没有跨源、没有
  * 延迟、不需要保存），而且与 OBS 用的是**同一份标记与样式**。
  *
- * ## 外观是怎样"放进"右栏的
- * 面板在 OBS 里通常是一整块画布，这里用两层缩放把它装进窄栏：
- *  - `PanelView` 内部按 `--panel-scale` 缩放（面板自身的字号倍率）；
- *  - 外层再用 `transform: scale(...)` 把整块等比缩到栏宽。
- * 两层都是**等比**的，所以版式与 OBS 一致，只是整体小了一号。
+ * ## 关于"字太小"
+ * 面板字号是固定 px，而预览被等比缩放，所以字**按同一比例**变小——
+ * 也就是说：**预览里字小 = 真实 OBS 源里字也小**，这本身是真实情况，
+ * 不是 bug（想让它变大应当调「字号」，而不是让预览骗人）。
+ *
+ * 为了让细节能看清，这里**不做任何缩放**，只按固定的虚拟画布
+ * （`CANVAS_W × CANVAS_H`）渲染出内容；**缩放到栏宽、或按 1:1 显示并滚动，
+ * 都由父组件用 CSS 处理**。这样两种模式的取舍留在外层，组件本身保持"如实渲染"。
  */
 import { computed } from 'vue'
 import PanelView from '@/components/PanelView.vue'
@@ -43,9 +46,6 @@ import type {
 const props = defineProps<{
   /** 当前编辑中的样式（草稿，未保存也会生效）。 */
   style: ResolvedPanelStyle
-  /** 面板页面尺寸（CSS px），由外层量出来传入。 */
-  width: number
-  height: number
   /** 预览哪一页：all / play / lyrics / danmaku。 */
   page: string
   /** 是否用真实数据（设置页里没有真实数据时用示例）。 */
@@ -132,82 +132,55 @@ const danmakuLog = computed(() =>
 )
 
 /**
- * 面板的虚拟画布尺寸。
+ * 面板的**虚拟画布**尺寸。
  *
- * 与 OBS 里的典型画布接近，这样版式（换行、`wide` 分栏）才有参考价值；
- * 再整体等比缩到栏宽，所以缩放不会让文字比例失真。
+ * 这是渲染时的固定尺寸，也是「1:1 实际大小」那一档的真实尺寸：
+ * `960×540` 是 1080p 画布的一半，属于 OBS 里很常见的浏览器源尺寸，
+ * 因此在这个尺寸下量到的排版（换行位置、`wide` 分栏比例）有参考价值。
+ *
+ * 组件**不做缩放**——缩到栏宽或按原尺寸滚动都由父组件用 CSS 决定，
+ * 这样组件始终"如实渲染"，不会出现"预览里看着刚好、OBS 里差一半"。
  */
 const CANVAS_W = 960
 const CANVAS_H = 540
-
-/** 把虚拟画布等比缩放到栏宽。 */
-const scale = computed(() => {
-  if (!props.width || !props.height) return 1
-  return Math.min(props.width / CANVAS_W, props.height / CANVAS_H)
-})
 </script>
 
 <template>
+  <!--
+    固定虚拟画布。父组件通过 CSS 变量控制它是被缩放还是原尺寸滚动：
+      --pv-scale  缩放比（父组件按容器宽度算好）
+    用 `transform: scale(var(--pv-scale))` 而不是内联值，是为了让父组件
+    不必知道画布尺寸就能切换模式。
+  -->
   <div
-    class="panel-preview"
-    :style="{ width: `${width}px`, height: `${height}px` }"
+    class="panel-preview-stage"
+    :style="{ width: `${CANVAS_W}px`, height: `${CANVAS_H}px` }"
   >
-    <div
-      class="panel-preview-stage"
-      :style="{
-        width: `${CANVAS_W}px`,
-        height: `${CANVAS_H}px`,
-        transform: `scale(${scale})`,
-        transformOrigin: 'top left',
-      }"
-    >
-      <PanelView
-        :resolved="style"
-        :page="page"
-        :current="current"
-        :queue="queue"
-        :player="player"
-        :danmaku-log="danmakuLog"
-      />
-    </div>
+    <PanelView
+      :resolved="style"
+      :page="page"
+      :current="current"
+      :queue="queue"
+      :player="player"
+      :danmaku-log="danmakuLog"
+    />
   </div>
 </template>
 
 <style scoped>
 /*
- * 预览容器：固定尺寸 + 裁掉溢出。
- * 里面那块是 960×540 的虚拟画布，被 `transform` 缩放后仍占据原尺寸，
- * 所以必须 `overflow: hidden`，否则会撑破右栏。
+ * 画布本体。`zoom` 而不是 `transform: scale`：
+ *  - `zoom` 会**改变布局尺寸**，父组件不需要为缩放后的高度预留空间，
+ *    容器用 `overflow: auto` 就能自然地"该滚动就滚动"；
+ *  - `transform` 不改变布局尺寸，缩放后元素仍占原尺寸，必须手工补偿高度。
+ *
+ * 缩放比由父组件通过 `--pv-scale` 给出（默认 1 = 1:1 实际大小）。
  */
-.panel-preview {
-  position: relative;
-  overflow: hidden;
-  border: 1px solid var(--bsr-border);
-  border-radius: 8px;
-  /* 棋盘格：透明背景是否生效一眼可见（与 OBS 里勾选"透明背景"对应） */
-  background-color: #f6e9ef;
-  background-image:
-    linear-gradient(45deg, rgba(255, 111, 165, 0.12) 25%, transparent 25%),
-    linear-gradient(-45deg, rgba(255, 111, 165, 0.12) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, rgba(255, 111, 165, 0.12) 75%),
-    linear-gradient(-45deg, transparent 75%, rgba(255, 111, 165, 0.12) 75%);
-  background-size: 18px 18px;
-  background-position:
-    0 0,
-    0 9px,
-    9px -9px,
-    -9px 0;
-}
-
 .panel-preview-stage {
-  /* 缩放后仍在左上角对齐 */
-  will-change: transform;
+  zoom: var(--pv-scale, 1);
 }
 
-/*
- * 面板根节点默认 `min-height: 100vh`——在预览里那会撑成整个视口高，
- * 把布局顶乱。这里强制等于虚拟画布高度。
- */
+/* 面板根节点默认 `min-height: 100vh`，在预览里会撑成整个视口高，必须压回画布高 */
 .panel-preview-stage :deep(.obs-panel) {
   min-height: 100%;
 }
