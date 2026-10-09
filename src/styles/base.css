@@ -27,6 +27,24 @@
   --bsr-danger: #ff5c8a;
   --bsr-warning: #ffab5e;
 
+  /*
+   * 导航条高度（10px 上下内边距 + 约 30px 内容 + 1px 下边框，见 `NavTabs.vue`）。
+   *
+   * 导航与其下方的页头都是 `position: sticky`：页头的 `top` 必须正好等于
+   * 导航高度，否则两者会重叠或露出缝隙。集中在这里定义，避免两个文件各写
+   * 一个魔数而对不上。
+   */
+  --bsr-nav-h: 51px;
+
+  /*
+   * 设置页页头（标题 + 保存按钮）的高度。
+   *
+   * 右栏预览要吸在**它下方**，所以这个值必须和页头实测高度一致
+   * （`padding: 6px 0` + `h2` 行高约 22px + 1px 下边框）。
+   * 改页头高度时记得一起改这里。
+   */
+  --bsr-page-head-h: 36px;
+
   color-scheme: light;
   font-family: 'Microsoft YaHei', 'PingFang SC', system-ui, -apple-system, sans-serif;
 }

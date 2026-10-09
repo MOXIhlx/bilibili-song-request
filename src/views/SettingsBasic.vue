@@ -260,22 +260,38 @@ const ready = computed(() => draft.value !== null)
 
 <style scoped>
 .settings-basic {
+  margin-top: 20px;
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
+/*
+ * 页头（标题 + 「重置 / 保存」）。
+ *
+ * 与 `ObsPanel.vue` 的 `.page-head` 保持一致：吸在**导航条下方**
+ * （`top: var(--bsr-nav-h)`，导航自己 sticky 在 `top: 0`），
+ * 半透明 + 模糊，避免滚轮往下时把卡片整块盖住。
+ * 这里以前**没有吸顶**，于是同一个软件里两个设置页行为不一致。
+ */
 .page-head {
+  position: sticky;
+  top: var(--bsr-nav-h, 51px);
+  z-index: 20;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
+  padding: 6px 0;
+  background: color-mix(in srgb, var(--bsr-bg) 78%, transparent);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--bsr-border);
 }
 
 .page-head h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 15px;
 }
 
 .card {

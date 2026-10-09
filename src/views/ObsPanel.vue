@@ -2291,6 +2291,7 @@ async function copyAll(): Promise<void> {
 }
 
 .panels-page {
+  margin-top: 20px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -2324,10 +2325,14 @@ async function copyAll(): Promise<void> {
 .editor-aside {
   /*
    * 吸附：这是「调样式还得滚下去看」的解法。
-   * top 取一个略大于顶栏的值，避免贴住顶部导航。
+   *
+   * `top` 必须等于**导航 + 页头**的高度之和（两者都在它上方吸顶），
+   * 否则预览会被压到它们底下、或往上顶出去一截。
+   * 这两个高度由 `base.css` 的 `--bsr-nav-h` / `--bsr-page-head-h` 给出，
+   * 改页头高度时不要在这里写魔数。
    */
   position: sticky;
-  top: 12px;
+  top: calc(var(--bsr-nav-h, 51px) + var(--bsr-page-head-h, 36px));
 }
 
 .preview-card {
@@ -2540,27 +2545,26 @@ async function copyAll(): Promise<void> {
  * ## 为什么吸顶
  * 这套设置表单很长，改了半天的样式再滚回页顶去点保存很别扭。
  *
- * ## 为什么是"半透明 + 模糊"而不是实心底色
- * 第一版用了不透明底色（`background: var(--bsr-bg)`），结果滚轮往下时
- * 下面的卡片从它底下经过，被**整块盖住**——用户反馈「这一条挡住我往下滚动的界面」。
- * 实心底色让吸顶栏变成一堵墙。
+ * ## 位置的三个要点
+ *  1. `top: var(--bsr-nav-h)` —— 吸在**导航条下方**，不是窗口顶部。
+ *     导航自己也是 sticky（`top: 0`），两者叠着才对得齐；写 0 会互相压住。
+ *  2. `z-index: 20` **低于**导航的 30，否则页头会盖在导航上面。
+ *  3. 第一版用了不透明底色（`background: var(--bsr-bg)`），结果滚轮往下时
+ *     下面的卡片从它底下经过被**整块盖住**——用户反馈「这一条挡住我往下滚动的界面」。
+ *     现在改为半透明 + `backdrop-filter` 模糊，内容能透出来，文字仍可读。
  *
- * 现在改为半透明 + `backdrop-filter` 模糊：底下的内容仍能**透过来看见**，
- * 同时文字保持可读。再配一条下边框，滚动时能看出"这里有一条浮层"。
- * 另外把内边距压紧、标题缩小，尽量少占高度。
- *
- * `z-index` 要高于卡片（卡片没有 z-index，默认 0）。
+ * 另外压紧了内边距、标题缩小，尽量少占高度。
  */
 .page-head {
   position: sticky;
-  top: 0;
+  top: var(--bsr-nav-h, 51px);
   z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   flex-wrap: wrap;
-  margin: 0 0 4px;
+  margin: 0;
   padding: 6px 0;
   /* 半透明：内容能透出来，不再是"一堵墙" */
   background: color-mix(in srgb, var(--bsr-bg) 78%, transparent);

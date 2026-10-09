@@ -1826,6 +1826,7 @@ function formatTime(iso: string): string {
 
 <style scoped>
 .dashboard {
+  margin-top: 20px;
   display: flex;
   flex-direction: column;
   gap: 16px;

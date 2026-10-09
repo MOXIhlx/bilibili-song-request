@@ -167,11 +167,18 @@ onUnmounted(() => {
  * `min-height: 0` 是必须的——flex 子项默认 `min-height: auto`，不加它
  * 内容会把本元素撑高（而不是产生滚动），`overflow: auto` 就成了摆设，
  * 连带 `.editor-aside` 的 sticky 吸附失效。
+ *
+ * ## 为什么没有 `padding-top`
+ * `position: sticky; top: 0` 是相对**内边距盒**吸附的。只要这里有上内边距，
+ * 吸顶元素就永远停在 `顶栏高 + 内边距` 处，而那段内边距里会**漏出滚过去的内容**
+ * （实测导航只能吸到 y=65，上方 20px 一直在漏）。
+ *
+ * 所以上内边距交还给各页容器自己的 `margin-top`，左右下三个方向不变。
  */
 .app-body {
   flex: 1;
   min-height: 0;
-  padding: 20px;
+  padding: 0 20px 20px;
   overflow: auto;
 }
 

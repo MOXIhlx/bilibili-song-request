@@ -141,7 +141,21 @@ const SETTINGS: Array<{ path: string; label: string }> = [
 </template>
 
 <style scoped>
+/*
+ * 导航条**吸附在滚动容器顶部**。
+ *
+ * 滚动容器是 `.app-body`（`overflow-y: auto`，见 `App.vue`），导航在里面。
+ * 早期导航是普通流元素，往下滚就消失，而它下面的页头却是 sticky——
+ * 于是"标题吸住了、导航跑掉了"，看着是错位的。
+ * 现在两者一起固定：导航 `top: 0`，页头 `top: var(--bsr-nav-h)`。
+ *
+ * `z-index: 30` 要比页头（20）高，否则页头会压在导航上面。
+ * 底色必须不透明，否则滚动时下面的内容会透上来叠字。
+ */
 .nav-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 30;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
