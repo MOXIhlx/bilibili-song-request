@@ -147,14 +147,26 @@ export const useAppStore = defineStore('app', () => {
       client = createRealtimeClient({
         onMessage: handleMessage,
         onStatusChange: (ok) => {
+          /*
+           * ⚠️ 这个 `connected` 是**每个 JS realm 各自一份**。
+           *
+           * 本项目有**三个前端入口**都会建自己的 store 与客户端：
+           * `index.html`（桌面窗口）、`dashboard.html`（浏览器控制台）、
+           * `panel.html`（OBS 浏览器源）。它们各自独立连接 `/ws`，
+           * 所以服务端会同时看到多条连接。
+           *
+           * 界面上的「实时连接」指示灯只能反映**自己这条**——
+           * 实测踩过：一条外部客户端（不带 src/UA，不是当前前端代码）
+           * 每 2 分 45 秒断一次，把窗口的状态灯反复染红，看起来像
+           * "弹幕掉线"，其实窗口自己的连接全程 0 次断开。
+           */
           connected.value = ok
           // 实时通道重新连上后刷新一次弹幕连接状态，避免错过状态变化。
           if (ok) void refreshBilibiliStatus()
         },
       })
     }
-    client.connect()
-  }
+    client.connect()  }
 
   function teardown(): void {
     client?.disconnect()

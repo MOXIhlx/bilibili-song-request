@@ -81,8 +81,40 @@ export function createRealtimeClient(options: RealtimeClientOptions): RealtimeCl
     clearTimers()
 
     const url = wsUrl('/ws')
+    /*
+     * 连接上带一个**来源标识**。
+     *
+     * ## 为什么要带
+     * 排查「界面反复掉线」时，服务端日志只有一句 `WS 客户端已连接/已断开`，
+     * 无法区分是**哪个页面**连的。而本项目有**三个**入口都会建这条连接：
+     *
+     * ```text
+     * src/main.ts       Tauri 桌面窗口（index.html）
+     * src/dashboard.ts  浏览器里打开的控制台（dashboard.html）
+     * src/panel.ts      OBS 浏览器源 / 面板页（panel.html）
+     * ```
+     *
+     * 它们各自独立连一次，所以服务端会看到**多条**连接；实测一个干净启动
+     * 的实例就有两条。没有标识时根本分不清"是谁在反复断"。
+     */
+    const source =
+      typeof document !== 'undefined' && document.body?.classList.contains('bsr-panel-body')
+        ? 'panel'
+        : 'window'
+    /*
+     * 再带上 User-Agent。
+     *
+     * `src` 只能区分"前端自己是谁"，区分不了"这是哪个程序里的页面"。
+     * 实测用它定位到一个**不带 src、也不带 UA** 的连接（不是当前版本的
+     * 前端代码）每 2 分 45 秒断一次，正是它让界面状态反复变红。
+     * URL 编码后再拼，避免 UA 里的分号/空格破坏查询串。
+     */
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+    const tagged =
+      `${url}${url.includes('?') ? '&' : '?'}src=${source}` +
+      (ua ? `&ua=${encodeURIComponent(ua)}` : '')
     try {
-      socket = new WebSocket(url)
+      socket = new WebSocket(tagged)
     } catch {
       scheduleReconnect()
       return
@@ -104,9 +136,31 @@ export function createRealtimeClient(options: RealtimeClientOptions): RealtimeCl
 
     socket.onerror = () => {
       // 具体原因由 onclose 统一处理，这里不重复排程。
+      // 但错误事件本身有信息量（尤其握手阶段），记下来便于排查。
+      console.warn('[realtime] WebSocket error 事件')
     }
 
-    socket.onclose = () => {
+    /*
+     * 断线时记录 close code / reason。
+     *
+     * ## 为什么要记
+     * 曾经出现过「界面每几十秒断一次」的问题，但日志里只有服务端的
+     * 「WS 客户端已断开」——**看不出是谁先关的**。WebSocket 的 close code
+     * 正是用来区分这个的：
+     *
+     * ```text
+     * 1000 正常关闭（我方主动 disconnect）
+     * 1001 对端离开（服务端/中间层关的）
+     * 1006 异常断开（没有 close 帧，通常是网络层或进程被杀）
+     * 4000 我们自己的「idle timeout」（见 startHeartbeat）
+     * ```
+     *
+     * 排查这类问题时，先看这个 code 能省掉大量猜测。
+     */
+    socket.onclose = (ev) => {
+      console.warn(
+        `[realtime] 连接关闭 code=${ev.code} reason=${ev.reason || '(空)'} wasClean=${ev.wasClean}`,
+      )
       options.onStatusChange?.(false)
       socket = null
       scheduleReconnect()

@@ -2837,6 +2837,27 @@ pub struct WsQuery {
     /// 是否在连接后立刻下发一次全量状态，默认 true。
     #[serde(default)]
     pub snapshot: Option<bool>,
+    /// 连接来源标识（`window` / `panel`）。
+    ///
+    /// ## 为什么要它
+    /// 本项目有**三个**前端入口都会各建一条 `/ws`：
+    /// `index.html`（桌面窗口）、`dashboard.html`（浏览器控制台）、
+    /// `panel.html`（OBS 浏览器源）。它们各自独立连接，所以服务端会同时
+    /// 看到多条——实测一个干净启动的实例就有**两条**。
+    ///
+    /// 排查「界面反复掉线」时，日志里只有 `WS 客户端已连接/已断开`，
+    /// 根本分不清是哪个页面在断。带上来源后一眼可辨。
+    #[serde(default)]
+    pub src: Option<String>,
+    /// 客户端 User-Agent。
+    ///
+    /// ## 为什么要它（实测派上用场的地方）
+    /// 加 `src` 之后发现有一条连接**不带 src**（记为 `unknown`），
+    /// 且**只有它在反复断**。`src` 只能区分前端自己填的标签，填不了
+    /// "这是哪个程序"——判断是不是某个**旧缓存的浏览器标签页**，
+    /// User-Agent 是唯一可靠依据（Edge 与 WebView2 的 UA 有明显区别）。
+    #[serde(default)]
+    pub ua: Option<String>,
 }
 
 /// WS 升级入口。
@@ -2845,7 +2866,20 @@ async fn ws_handler(
     Query(query): Query<WsQuery>,
     State(ctx): State<Arc<ServerCtx>>,
 ) -> Response {
-    ws.on_upgrade(move |socket| ws_session(socket, ctx, query.snapshot.unwrap_or(true)))
+    let src = query.src.unwrap_or_else(|| "unknown".to_string());
+    /*
+     * 日志里带上来源与 User-Agent（只取前 80 字符，避免刷屏）。
+     *
+     * 这两项是排查「界面反复掉线」的关键：`src` 区分前端入口，
+     * UA 区分"是浏览器标签页还是 WebView2 窗口"——实测靠它才确认
+     * 那条反复断连的连接来自一个**旧缓存的页面**。
+     */
+    let ua = query
+        .ua
+        .as_deref()
+        .map(|s| s.chars().take(80).collect::<String>())
+        .unwrap_or_else(|| "(无 UA)".to_string());
+    ws.on_upgrade(move |socket| ws_session(socket, ctx, query.snapshot.unwrap_or(true), src, ua))
 }
 
 /// 计算并推送一次全量快照。
@@ -2858,7 +2892,13 @@ async fn push_snapshot(
 }
 
 /// 单个 WS 连接的生命周期。
-async fn ws_session(socket: WebSocket, ctx: Arc<ServerCtx>, send_snapshot: bool) {
+async fn ws_session(
+    socket: WebSocket,
+    ctx: Arc<ServerCtx>,
+    send_snapshot: bool,
+    ws_source: String,
+    ws_ua: String,
+) {
     // 直接克隆内部的 `StateCell`（它本身是 Arc 包装，克隆很廉价），
     // 避免把 `Arc<ServerCtx>` 传进推送函数造成类型不匹配。
     let state = ctx.state.clone();
@@ -2880,7 +2920,7 @@ async fn ws_session(socket: WebSocket, ctx: Arc<ServerCtx>, send_snapshot: bool)
     if send_snapshot && push_snapshot(&state, &mut sender).await.is_err() {
         return;
     }
-    info!("WS 客户端已连接");
+    info!(src = %ws_source, ua = %ws_ua, "WS 客户端已连接");
 
     loop {
         tokio::select! {
@@ -2946,8 +2986,7 @@ async fn ws_session(socket: WebSocket, ctx: Arc<ServerCtx>, send_snapshot: bool)
         }
     }
 
-    info!("WS 客户端已断开");
-}
+    info!(src = %ws_source, "WS 客户端已断开");}
 
 /// 处理客户端发来的文本消息，返回**需要回给客户端的文本**（`None` = 不用回）。
 ///
