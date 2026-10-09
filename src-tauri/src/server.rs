@@ -2888,10 +2888,19 @@ async fn ws_session(socket: WebSocket, ctx: Arc<ServerCtx>, send_snapshot: bool)
             incoming = receiver.next() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
-                        if let Err(err) = handle_client_message(&text) {
-                            let ev = HubEvent::Error(err);
-                            if sender.send(Message::Text(ev.to_text().into())).await.is_err() {
-                                break;
+                        match handle_client_message(&text) {
+                            // 需要回复（例如 pong）：不回的话前端会判链路已死并重连
+                            Ok(Some(reply)) => {
+                                if sender.send(Message::Text(reply.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(err) => {
+                                let ev = HubEvent::Error(err);
+                                if sender.send(Message::Text(ev.to_text().into())).await.is_err() {
+                                    break;
+                                }
                             }
                         }
                     }
@@ -2940,13 +2949,52 @@ async fn ws_session(socket: WebSocket, ctx: Arc<ServerCtx>, send_snapshot: bool)
     info!("WS 客户端已断开");
 }
 
-/// 处理客户端发来的文本消息。
-/// 目前只支持 `ping`，后续可在此扩展面板上报等能力。
-fn handle_client_message(text: &str) -> Result<(), String> {
+/// 处理客户端发来的文本消息，返回**需要回给客户端的文本**（`None` = 不用回）。
+///
+/// ## 为什么必须回 pong（这是一个真实断线 bug 的根因）
+/// 前端 `realtime.ts` 的心跳逻辑是：
+///
+/// ```text
+/// 每 20 秒一次：
+///   if (Date.now() - lastMessageAt > 45_000) socket.close(4000, 'idle timeout')
+///   else socket.send({ type: 'ping' })
+/// ```
+///
+/// 也就是说：**只要 45 秒内没收到任何消息，前端就判定链路已死并主动断开重连**。
+/// 而这里的服务端原本收到 `ping` 只是 `Ok(())`——**什么都不回**，
+/// 服务端只在**空闲满 30 秒**时才推一次快照或发 WebSocket 层 ping。
+/// 于是直播间没人点歌时（没有事件、没有快照推送）：
+///
+/// ```text
+/// 每 20s 前端发 ping → 服务端收下但不回 → lastMessageAt 永不更新
+/// → 45s 后前端 close(4000) → 重连 → 再 45s 再断 …… 无限循环
+/// ```
+///
+/// 实测现象：日志里 `WS 客户端已断开 / 已连接` 每 20~30 秒成对出现、连续不断，
+/// 而同时 **B 站弹幕连接完全正常**（心跳与弹幕都在收）。
+/// 用户看到的就是"弹幕掉线"，其实断的是界面 ↔ 本机后端这条通道。
+///
+/// 前端注释里写着"服务器回 `{"type":"pong"}`"，但服务端**从来没实现过**。
+/// 现在补上：收到 `ping` 立即回一条 `pong`，把 `lastMessageAt` 续上。
+fn handle_client_message(text: &str) -> Result<Option<String>, String> {
     let value: serde_json::Value =
         serde_json::from_str(text).map_err(|e| format!("JSON 解析失败：{e}"))?;
     match value.get("type").and_then(|t| t.as_str()) {
-        Some("ping") => Ok(()),
+        Some("ping") => {
+            // 回显客户端带来的 at，便于对照往返延迟；没有就现取一个
+            let at = value
+                .get("at")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+            /*
+             * ⚠️ 形状必须是 `{type, data}`——前端 `types.ts` 里
+             * `WsMessage` 的 pong 分支就是 `{ type: 'pong'; data: { at: string } }`，
+             * 直接摊平成 `{type, at}` 会让 `parseWsMessage` 解析不出 `data`。
+             */
+            let pong = serde_json::json!({ "type": "pong", "data": { "at": at } });
+            Ok(Some(pong.to_string()))
+        }
         Some(other) => Err(format!("暂不支持的消息类型：{other}")),
         None => Err("消息缺少 type 字段".to_string()),
     }
@@ -3059,5 +3107,45 @@ impl IntoResponse for ApiError {
         }
         let body = serde_json::json!({ "error": self.message });
         (self.status, Json(body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod client_message_tests {
+    use super::handle_client_message;
+
+    /// 应用层 ping **必须**得到 pong 回复。
+    ///
+    /// 这条锁住一个真实的断线 bug：前端每 20 秒发一次 ping，并且
+    /// **45 秒内收不到任何消息就主动断开重连**（见 `src/api/realtime.ts`）。
+    /// 服务端原本收到 ping 什么都不回，于是直播间没人点歌时连接每 45 秒
+    /// 断一次、日志里「WS 客户端已断开 / 已连接」成对刷屏——
+    /// 用户看到的是"弹幕掉线"，实际断的是界面 ↔ 本机后端这条通道。
+    #[test]
+    fn ping_gets_a_pong_reply() {
+        let reply = handle_client_message(r#"{"type":"ping","at":"2026-01-01T00:00:00Z"}"#)
+            .expect("ping 应当被接受")
+            .expect("ping 必须有回复，否则前端会判定链路已死并重连");
+        let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["type"], "pong");
+        // 形状必须是 {type, data}：前端 `WsMessage` 的 pong 分支就是 data.at
+        assert_eq!(v["data"]["at"], "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn ping_without_at_still_gets_a_pong() {
+        let reply = handle_client_message(r#"{"type":"ping"}"#)
+            .unwrap()
+            .expect("没有 at 也要回 pong");
+        let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(v["type"], "pong");
+        assert!(v["data"]["at"].is_string(), "应补一个时间戳");
+    }
+
+    #[test]
+    fn unknown_or_malformed_messages_are_rejected() {
+        assert!(handle_client_message(r#"{"type":"nope"}"#).is_err());
+        assert!(handle_client_message(r#"{}"#).is_err(), "缺 type 应报错");
+        assert!(handle_client_message("not json").is_err());
     }
 }

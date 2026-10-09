@@ -275,13 +275,33 @@ async fn websocket_pushes_snapshot_and_answers_ping() {
     assert_eq!(state["type"], "state");
     assert!(state["data"]["queue"].is_array());
 
-    // 应用 ping → 期待 pong（服务器仅回执，不回包）
+    /*
+     * 应用层 ping → **必须有 pong 回复**。
+     *
+     * ⚠️ 这条断言在 2026-10-09 被修正过：原断言是"ping 之后下一个帧应当是
+     * error"，也就是把"服务端不回包"当成了正确行为锁在这里（注释却写着
+     * "期待 pong"，自相矛盾）。
+     *
+     * 那个行为导致了一个真实的断线 bug：前端每 20 秒发一次 ping，并且
+     * **45 秒内收不到任何消息就主动断开重连**。服务端从不回复，于是直播间
+     * 没人点歌时连接每 45 秒断一次，日志里「WS 客户端已断开 / 已连接」
+     * 成对刷屏——用户看到的是"弹幕掉线"，其实断的是界面 ↔ 本机后端这条通道。
+     */
     socket
-        .send(WsMessage::Text(r#"{"type":"ping"}"#.into()))
+        .send(WsMessage::Text(r#"{"type":"ping","at":"2026-01-01T00:00:00Z"}"#.into()))
         .await
         .expect("发送 ping 失败");
+
+    let pong = next_json(&mut socket).await;
+    assert_eq!(pong["type"], "pong", "服务端必须回 pong，否则前端会判定链路已死");
+    assert_eq!(
+        pong["data"]["at"], "2026-01-01T00:00:00Z",
+        "pong 要回显客户端带来的 at（格式为 {{type, data}}）"
+    );
+
+    // 不支持的类型仍然回 error
     socket
-        .send(WsMessage::Text(r#"{"type":"pong"}"#.into()))
+        .send(WsMessage::Text(r#"{"type":"nope"}"#.into()))
         .await
         .expect("发送非法类型失败");
 
