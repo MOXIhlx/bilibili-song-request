@@ -33,7 +33,8 @@ import {
   type BackgroundItem,
 } from '@/api'
 import NavTabs from '@/components/NavTabs.vue'
-import { clonePlain } from '@/composables/panelParams'
+import PanelPreview from '@/components/PanelPreview.vue'
+import { clonePlain, styleToResolved } from '@/composables/panelParams'
 import BackgroundEditor from '@/components/BackgroundEditor.vue'
 import { showMessage } from '@/stores/message'
 import { useAppStore } from '@/stores/app'
@@ -52,18 +53,6 @@ const route = useRoute()
 const showBackgroundsOnly = computed(
   () => route.path === '/settings/background' || route.path.startsWith('/settings/background'),
 )
-/**
- * 重新加载预览 iframe。
- *
- * iframe 的 `:key` 绑在 `previewUrl` 上，所以切换面板类型时会自然重建；
- * 这个函数用于「改了样式但地址没变」时手动刷新。
- */
-function reloadPreview(): void {
-  previewNonce.value += 1
-}
-
-/** 预览刷新计数：只改 key，不影响地址本身。 */
-const previewNonce = ref(0)
 
 /** 本地编辑副本（正在编辑的那套样式）。 */
 const draft = ref<PanelStyleConfig | null>(null)
@@ -1137,18 +1126,9 @@ const pages = computed(() =>
  * 当前预览的面板。
  *
  * 关闭某个面板时（`enabled` 变 false）要自动切到第一个仍启用的，
- * 否则预览会停在一个已被隐藏的面板地址上。
+ * 否则预览会停在一个已被隐藏的面板上。
  */
 const previewKey = ref<PanelKey>('play')
-const previewUrl = computed(() => {
-  const list = pages.value
-  if (!list.length) return ''
-  const found = list.find((p) => p.key === previewKey.value)
-  return (found ?? list[0]).url
-})
-
-/** 桥接页地址：与预览同源，用综合面板即可（它已内置 message 处理）。 */
-const bridgeUrl = computed(() => apiUrl('/panel'))
 
 // ── 当前背景图的等比预览 ────────────────────────────────────────────────
 
@@ -1231,60 +1211,26 @@ const previewLabel = computed(() => {
   return (found ?? list[0]).label
 })
 
-// ── 实时预览 ────────────────────────────────────────────────────────────
+// ── 预览（本地渲染，不用 iframe）──────────────────────────────────────
 
 /**
- * 预览用的**虚拟画布**尺寸。
+ * 预览容器尺寸。
  *
- * ## 为什么不能直接把 iframe 拉满栏宽
- * 右栏只有约 350px 宽。把 iframe 宽度设成 350px，面板就会按 350px 的视口
- * 排版——文字换行位置、`wide` 布局的左右分栏比例全都和 OBS 里不一样。
- *
- * ## 字号为什么会"看起来被缩小了"
- * 面板字号是**固定 px**，而整个预览被 `transform: scale()` 缩到栏宽，
- * 所以字也跟着缩到同一个比例（`350 / 960 ≈ 0.36`）。
- *
- * 这是"等比缩小"的必然结果，本身不是 bug——**但预览的字就该尽可能看得清**。
- * 面板字号是**相对视口宽度**呈现的，所以把虚拟画布调窄，字在画面里占比就更大、
- * 缩下来也更清楚。`720` 是折中：既能放下 `wide` 布局的两栏，字又比 960 明显大。
- *
- * ⚠️ 代价：`wrap` 布局的换行位置会与 1920 画布下的 OBS 不同。
- * 但既然预览本来就不能保证与 OBS 逐像素一致（见 `待修问题.md` 第 7 条），
- * 优先选"看得清"更有用。
+ * 面板按固定画布尺寸渲染，再等比缩放进来，所以这里只需要量出容器大小。
  */
-const PREVIEW_CANVAS_W = 720
-/** 虚拟画布高度：16:9，与 OBS 画布比例一致。 */
-const PREVIEW_CANVAS_H = 405
+const previewBoxEl = ref<HTMLElement | null>(null)
+const previewBoxSize = ref({ w: 0, h: 0 })
 
-/** 预览框的实际宽度（由 CSS 决定），用于算缩放比例。 */
-const previewBoxW = ref(0)
-const previewFrameEl = ref<HTMLElement | null>(null)
-
-/** 缩放比例 = 栏宽 / 虚拟宽度。 */
-const previewScale = computed(() => {
-  const w = previewBoxW.value
-  if (!w) return 0.4
-  return w / PREVIEW_CANVAS_W
-})
-
-/** 舞台：按虚拟尺寸渲染，再缩放；外层高度按缩放后的实际高度撑开。 */
-const previewStageStyle = computed(() => ({
-  width: `${PREVIEW_CANVAS_W}px`,
-  height: `${PREVIEW_CANVAS_H}px`,
-  transform: `scale(${previewScale.value})`,
-  transformOrigin: 'top left',
-}))
-
-/** 量预览框宽度（栏宽会随窗口变化）。 */
 let previewRO: ResizeObserver | null = null
 
 onMounted(() => {
-  const el = previewFrameEl.value
+  const el = previewBoxEl.value
   if (!el) return
-  previewBoxW.value = el.clientWidth
-  previewRO = new ResizeObserver(() => {
-    previewBoxW.value = el.clientWidth
-  })
+  const sync = () => {
+    previewBoxSize.value = { w: el.clientWidth, h: el.clientHeight }
+  }
+  sync()
+  previewRO = new ResizeObserver(sync)
   previewRO.observe(el)
 })
 
@@ -1292,80 +1238,29 @@ onBeforeUnmount(() => {
   previewRO?.disconnect()
 })
 
-/** 预览 iframe 的引用（仅用于量宽度）。 */
-const previewFrame = ref<HTMLIFrameElement | null>(null)
+/** 预览用的画布尺寸：按 16:9 取满容器宽度，并封顶以免过高。 */
+const previewBox = computed(() => {
+  const w = previewBoxSize.value.w
+  if (!w) return { w: 480, h: 270 }
+  return { w, h: Math.round((w * 9) / 16) }
+})
 
 /**
- * 桥接 iframe 的引用。
+ * 预览用的**已解析样式**——直接来自当前草稿。
  *
- * 它开在 `127.0.0.1:17777`（与预览**同源**），职责只有一个：
- * 收到设置页的 `postMessage` 后把草稿写进 `localStorage`；预览页会因此收到
- * `storage` 事件并把样式应用上去。
+ * ## 这就是"实时预览"
+ * 因为是本地渲染，草稿一变这个 computed 就重算，面板立刻重绘。
+ * 没有 iframe、没有跨源消息、没有存储中转，也不需要先保存。
+ * （早期用 iframe 时这三条路都试过，全部因为跨源隔离而失败，
+ * 详见 `PanelPreview.vue` 顶部说明。）
  */
-const bridgeFrame = ref<HTMLIFrameElement | null>(null)
+const previewResolvedStyle = computed(() =>
+  draft.value
+    ? styleToResolved(draft.value, null)
+    : styleToResolved(DEFAULT_PANEL as PanelStyleConfig, null),
+)
 
-/**
- * 预览 iframe 是否可用（桥接页报过到）。
- *
- * 加载完成前 `postMessage` 会发给一个还没挂上监听器的文档，消息直接丢掉，
- * 于是"改颜色没反应"——所以没就绪时不发，等桥接页报到后补发。
- */
-const previewReady = ref(false)
 
-/**
- * 把当前草稿推给预览（实时预览）。
- *
- * ## 为什么要绕「桥接 iframe + localStorage」
- * 预览 iframe 与设置页**不同源**（`127.0.0.1:17777` vs `tauri.localhost`），
- * 被 WebView2 站点隔离到不同进程。实测 `postMessage` **双向都不通**：
- * ```
- * iframe.contentDocument → null
- * 父 → 子、子 → 父          → 均无回音
- * ```
- * 所以设置页**没法直接**和预览说话。
- *
- * 但 `localStorage` 是**按源共享**且同源页面之间会自动广播 `storage` 事件。
- * 于是：
- *  1. 设置页把草稿 `postMessage` 给**桥接 iframe**（开在 17777，同源）；
- *  2. 桥接页写进 `localStorage`（写入方自己不收 `storage` 事件，但**其它同源页会收到**）；
- *  3. 主预览页收到事件 → 立即应用草稿样式。
- *
- * 桥接页复用了 `/panel`（它已内置这段处理），不需要新增页面。
- */
-function pushPreviewStyle(): void {
-  const bridge = bridgeFrame.value
-  const cfg = draft.value
-  if (!bridge?.contentWindow || !cfg) return
-  bridge.contentWindow.postMessage(
-    { type: 'bsr:preview-style', style: clonePlain(cfg) },
-    '*',
-  )
-}
-
-/**
- * 桥接页报到 → 说明它已经挂上监听器，可以把当前草稿推过去了。
- *
- * 不用 iframe 的 `load` 事件判断就绪：跨源 iframe 的 `load` 在 WebView2 里
- * 表现不可靠（早期就是因此一条消息都没发出去）。由接收方主动报到更稳。
- */
-function onBridgeReady(ev: MessageEvent): void {
-  const data = ev.data as { type?: string } | null
-  if (!data) return
-  if (data.type !== 'bsr:preview-hello' && data.type !== 'bsr:preview-ready') return
-  previewReady.value = true
-  pushPreviewStyle()
-}
-
-onMounted(() => window.addEventListener('message', onBridgeReady))
-onBeforeUnmount(() => window.removeEventListener('message', onBridgeReady))
-
-/** 预览 iframe 加载完成后重推一次（切面板类型时会重建）。 */
-function onPreviewLoad(): void {
-  pushPreviewStyle()
-}
-
-// 草稿任何字段变化 → 立刻推给预览（深度监听，颜色/字号/布局都算）
-watch(draft, pushPreviewStyle, { deep: true })
 
 /** 关闭中的面板被预览时，自动切走。 */
 watch(pages, (list) => {
@@ -1881,9 +1776,6 @@ async function copyAll(): Promise<void> {
           <section class="card preview-card">
             <div class="card-head">
               <h3>预览 · {{ previewLabel }}</h3>
-              <div class="controls">
-                <button class="ghost" title="重新加载预览" @click="reloadPreview()">刷新</button>
-              </div>
             </div>
             <!-- 面板类型切换：一行放下，避免和预览抢高度 -->
             <div class="preview-tabs">
@@ -1898,35 +1790,20 @@ async function copyAll(): Promise<void> {
               </button>
             </div>
             <!--
-              桥接 iframe：不可见，只用来把草稿写进预览那份 localStorage。
-              它与预览同源（都在 17777），所以 StorageEvent 能广播过去；
-              设置页自己跨源，直接写预览的存储会被拦。
+              预览是**本地渲染**的（不再用 iframe）：
+              iframe 与设置页跨源，既做不到"改样式立刻可见"，
+              宽度也和一个真实的 OBS 画布差太远。见 `PanelPreview.vue`。
             -->
-            <iframe
-              ref="bridgeFrame"
-              class="preview-bridge"
-              :src="bridgeUrl"
-              title="预览桥接"
-              aria-hidden="true"
-              tabindex="-1"
-            />
-            <div
-              ref="previewFrameEl"
-              class="preview-frame"
-              :class="{ transparent: draft.bg === 'transparent' }"
-            >
-              <div class="preview-stage" :style="previewStageStyle">
-                <iframe
-                  :key="`${previewUrl}#${previewNonce}`"
-                  ref="previewFrame"
-                  :src="previewUrl"
-                  title="面板预览"
-                  @load="onPreviewLoad"
-                />
-              </div>
+            <div ref="previewBoxEl" class="preview-frame">
+              <PanelPreview
+                :style="previewResolvedStyle"
+                :page="previewKey === 'all' ? 'all' : previewKey"
+                :width="previewBox.w"
+                :height="previewBox.h"
+              />
             </div>
             <p class="dim preview-hint">
-              预览实时跟随左边改动的样式。改颜色时不会整页重载，只推变量。
+              预览用的是示例数据，样式与 OBS 完全同源；改左边任一项它都会立刻变。
             </p>
           </section>
         </aside>
