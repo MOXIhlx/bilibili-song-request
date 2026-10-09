@@ -310,25 +310,39 @@ function formatDuration(seconds: number): string {
  * 直接设在 `.obs-panel` 上会把文字一起变淡，那这个功能就没意义了。
  * 所以把背景图挪到一层 `::before` 上，`opacity` 就只作用于它。
  *
- * `pointer-events: none` 必须加：否则这层会盖住面板里的可点区域。
+ * ## ⚠️ `z-index` 必须是**负值**，否则会盖住全部内容
+ * 早期这里是 `z-index: 0`，并且靠一条
+ * `.obs-panel > .panel-flow { position: relative; z-index: 1 }` 想把内容抬上来。
+ * 那条规则**根本无效**——`.panel-flow` 在默认布局下是 `display: contents`
+ * （见文件后半的 `.panel-flow { display: contents }`），**不生成盒子**，
+ * 设 `position`/`z-index` 都没有作用。
+ *
+ * 结果是：`::before` 是 `z-index: 0` 的**定位元素**，而内容是非定位内容，
+ * 按 CSS 绘制顺序**定位元素排在后**——背景层直接盖在文字上面。
+ *
+ * 实测（把背景层强制设成纯红、不透明后截图）：整屏纯红，
+ * 「正在播放 / 队列 / 歌词 / 弹幕」**全部**不可见。
+ *
+ * 改成负值就符合规范里的"早于流内内容绘制"，不需要任何内容元素配合，
+ * 也不会与 `wide` 布局的媒体查询规则打架（那些规则会改 `.panel-flow` 的定位）。
+ *
+ * `.obs-panel` 自身是 `position: relative` 且带 `zoom`，已形成堆叠上下文，
+ * 负 `z-index` 不会漏到页面背景之后。
+ *
+ * `pointer-events: none` 必须保留：否则这层会挡住面板里的可点区域。
  */
 .obs-panel::before {
   content: '';
   position: absolute;
   inset: 0;
-  z-index: 0;
+  /* 负值：在**所有**流内内容之前绘制（含 display:contents 展开出来的子元素） */
+  z-index: -1;
   background-image: var(--panel-bg-image);
   background-size: cover;
-  background-position: center;
+  background-position: var(--panel-bg-pos, center);
   background-repeat: no-repeat;
   opacity: var(--panel-bg-opacity);
   pointer-events: none;
-}
-
-/* 内容抬到背景层之上 */
-.obs-panel > .panel-flow {
-  position: relative;
-  z-index: 1;
 }
 
 /*
