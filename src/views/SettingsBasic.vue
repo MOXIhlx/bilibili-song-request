@@ -36,22 +36,52 @@ const simulateText = ref('点歌 你还在不在 梁静茹')
 /**
  * 改界面配色（主题色 / 背景色）。
  *
- * 只改草稿，**保存后才落盘**——与页面上其它设置一致。
- * 但预览是实时的：store 里 watch 了 `config.ui_theme`，而草稿不在 store 里，
- * 所以这里额外**即时预览**一次，让用户边拖取色器边看效果，
- * 点「重置」时会回到已保存的配色。
+ * ## 为什么这两个**立即保存**，而不是等点「保存」
+ * 其它字段（端口、规则）是"配一次就不动"，存草稿、点保存很合理；
+ * 而配色是**边看边调**的东西。
+ *
+ * 早期它也走草稿，结果用户反馈「每当我点到设置页面，都会把主题背景色改掉」——
+ * 草稿不落盘，一离开页面（或页面重新挂载）就回到已保存的旧值，
+ * 看起来就像"被改回去了"。
+ *
+ * 现在即时落盘：颜色一改就写配置，**立刻生效、离开也还在**。
+ * 落盘会经过后端 `save_config` 的颜色净化（非法值修回默认）。
  */
-function setUiColor(key: 'accent' | 'bg', value: string): void {
+async function setUiColor(key: 'accent' | 'bg', value: string): Promise<void> {
   if (!draft.value) return
   draft.value.ui_theme = { ...draft.value.ui_theme, [key]: value }
+  // 先本地生效：拖动取色器时要即时反馈，不能等请求回来
   applyUiTheme(draft.value.ui_theme)
+  await persistUiTheme()
 }
 
-/** 恢复出厂配色（粉白）。 */
-function resetUiTheme(): void {
+/** 恢复出厂配色（粉白），同样即时落盘。 */
+async function resetUiTheme(): Promise<void> {
   if (!draft.value) return
   draft.value.ui_theme = { ...DEFAULT_UI_THEME }
   applyUiTheme(draft.value.ui_theme)
+  await persistUiTheme()
+}
+
+/** 配色保存中（防止连点堆请求）。 */
+const uiThemeSaving = ref(false)
+
+/**
+ * 把配色写回后端。
+ *
+ * 提交整份草稿而不是只提交配色：后端的 `save_config` 是所有保存路径的
+ * 唯一出口（并在那里做颜色净化），复用它最省心。
+ */
+async function persistUiTheme(): Promise<void> {
+  if (!draft.value || uiThemeSaving.value) return
+  uiThemeSaving.value = true
+  try {
+    await store.updateConfig(clonePlain(draft.value))
+  } catch (err) {
+    showMessage('err', `配色保存失败：${(err as Error).message}`)
+  } finally {
+    uiThemeSaving.value = false
+  }
 }
 
 /** 重置为已保存的配置。 */

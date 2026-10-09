@@ -300,6 +300,22 @@ function formatDuration(seconds: number): string {
   zoom: var(--panel-scale);
   /* ::before 的定位基准 */
   position: relative;
+  /*
+   * ⚠️ **必须显式建立堆叠上下文**，否则背景层会消失。
+   *
+   * 背景层是 `z-index: -1` 的定位伪元素，而**负 z-index 会逃逸到最近的
+   * 堆叠上下文**里绘制。若本元素不构成堆叠上下文，它就会跑到**祖先**的
+   * 堆叠上下文里，被画在祖先的背景**之下**——于是背景图看不见。
+   *
+   * 实测踩到的场景：设置页的预览里，`::before` 被画到了 `.preview-box`
+   * 的棋盘格底纹下面，所以"预览里看不到背景图"；而 OBS 的 `/panel` 页面
+   * 祖先链干净，同一个样式却显示正常——**同一份代码两种结果**。
+   *
+   * 早期这里靠注释里"`zoom` 会形成堆叠上下文"的说法来兜底，那个说法是**错的**：
+   * `zoom` 不构成堆叠上下文，`position: relative` + `z-index: auto` 也不构成。
+   * `isolation: isolate` 才是明确、不依赖布局副作用的做法。
+   */
+  isolation: isolate;
 }
 
 /*
@@ -326,8 +342,8 @@ function formatDuration(seconds: number): string {
  * 改成负值就符合规范里的"早于流内内容绘制"，不需要任何内容元素配合，
  * 也不会与 `wide` 布局的媒体查询规则打架（那些规则会改 `.panel-flow` 的定位）。
  *
- * `.obs-panel` 自身是 `position: relative` 且带 `zoom`，已形成堆叠上下文，
- * 负 `z-index` 不会漏到页面背景之后。
+ * ⚠️ 负值能生效的前提是**本元素自己构成堆叠上下文**，见 `.obs-panel` 上的
+ * `isolation: isolate`——否则这层会逃逸到祖先、被画在祖先背景之下。
  *
  * `pointer-events: none` 必须保留：否则这层会挡住面板里的可点区域。
  */
