@@ -1484,6 +1484,70 @@ function startAsideResize(ev: PointerEvent): void {
  */
 const previewExpanded = ref(false)
 
+// ── 右下角浮动操作（重置 / 保存）────────────────────────────────────────
+
+/**
+ * 页头元素，用于观察它是否还在视野里。
+ *
+ * 用 `ref` + `watch`（`flush: 'post'`）而不是 `onMounted`：页头在
+ * `v-if` 之类的条件里，挂载那一刻可能还不存在（本项目已因这个坑栽过一次，
+ * 见 `previewBoxEl` 的说明）。
+ */
+const pageHeadEl = ref<HTMLElement | null>(null)
+
+/**
+ * 页头是否**完全**在视野内。
+ *
+ * 初始 `true`：页面刚打开时页头就在顶部，浮动按钮不该出现。
+ */
+const headVisible = ref(true)
+
+/**
+ * 是否显示右下角浮动操作。
+ *
+ * ## 为什么用 `IntersectionObserver` 而不是比较 `scrollTop`
+ * 页头的高度会变（标题换行、按钮换行、窗口宽度变化），写死一个阈值
+ * 必然在某处不准。观察元素本身则自动适应所有情况。
+ *
+ * `threshold: 0` + 判断 `isIntersecting`：**只要页头有一点点离开视野**
+ * 就显示浮动按钮，不会有"顶部按钮已经被切掉一半、浮动按钮却还没出来"的空档。
+ *
+ * 滚动容器是 `.app-body`（不是视口），所以必须把 `root` 明确指过去——
+ * 否则观察的是视口交叉，而页头一直在视口里（只是被容器裁掉了），永远不触发。
+ */
+const showFloatingActions = computed(
+  () => ready.value && !!draft.value && !showBackgroundsOnly.value && !headVisible.value,
+)
+
+let headObserver: IntersectionObserver | null = null
+
+watch(
+  [pageHeadEl, () => showBackgroundsOnly.value],
+  ([el, backgroundsOnly], _old, onCleanup) => {
+    headObserver?.disconnect()
+    headObserver = null
+    // 背景图库页没有这两个操作，不需要观察
+    if (!el || backgroundsOnly) {
+      headVisible.value = true
+      return
+    }
+    const root = el.closest('.app-body')
+    headObserver = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[entries.length - 1]
+        if (entry) headVisible.value = entry.isIntersecting
+      },
+      { root: root instanceof Element ? root : null, threshold: 0 },
+    )
+    headObserver.observe(el)
+    onCleanup(() => {
+      headObserver?.disconnect()
+      headObserver = null
+    })
+  },
+  { flush: 'post' },
+)
+
 /*
  * 「1:1 实际大小」开关**每次进入页面都复位到等比档**。
  *
@@ -1582,7 +1646,7 @@ async function copyAll(): Promise<void> {
     <!-- 统一导航：左边控制台标签，右边「设置」（顶栏已不再有页级导航） -->
     <NavTabs :model-value="null" />
 
-    <div class="page-head">
+    <div ref="pageHeadEl" class="page-head">
       <div>
         <h2>{{ showBackgroundsOnly ? '背景图库' : 'OBS 面板样式与地址' }}</h2>
       </div>
@@ -2370,20 +2434,38 @@ async function copyAll(): Promise<void> {
     </div>
 
     <!--
-      右下角浮动的「保存样式」。
-      页头不吸顶了，所以滚到下面改完样式时靠它保存。
+      右下角浮动的「重置 / 保存样式」。
+      页头不吸顶了，所以滚到下面改完样式时靠它操作，不必滚回顶部。
+
+      ## 为什么只在页头滚出视野后才出现
+      一直飘着会挡住右下角的内容（尤其背景图库的缩略图和右栏预览底部）。
+      顶部本来就有同样的两个按钮，**看不到它们时才需要这个替补**。
+      用 `IntersectionObserver` 观察页头，而不是比较 `scrollTop`——
+      这样窗口大小变化、内容增减都自动适应，不必维护一个阈值。
+
       只在「OBS 面板」子标签显示（背景图库页没有样式可存）。
     -->
-    <button
-      v-if="ready && draft && !showBackgroundsOnly"
-      class="floating-save"
-      :class="{ 'is-saved': saved }"
-      :disabled="saving"
-      title="保存当前样式（改完样式不用滚回顶部）"
-      @click="save()"
-    >
-      {{ saving ? '保存中…' : saved ? '✓ 已保存' : '保存样式' }}
-    </button>
+    <Transition name="float-fade">
+      <div v-if="showFloatingActions" class="floating-actions">
+        <button
+          class="floating-btn"
+          :disabled="!ready"
+          title="放弃改动，恢复成已保存的样式"
+          @click="resetDraft()"
+        >
+          重置
+        </button>
+        <button
+          class="floating-btn is-primary"
+          :class="{ 'is-saved': saved }"
+          :disabled="!ready || saving"
+          title="保存当前样式（改完样式不用滚回顶部）"
+          @click="save()"
+        >
+          {{ saving ? '保存中…' : saved ? '✓ 已保存' : '保存样式' }}
+        </button>
+      </div>
+    </Transition>
 
     <!--
       背景图裁剪编辑器。
@@ -3017,45 +3099,92 @@ async function copyAll(): Promise<void> {
 }
 
 /*
- * 右下角浮动的「保存样式」。
+ * 右下角浮动的「重置 / 保存样式」。
  *
- * 页头不再吸顶后，「滚到下面改完样式还要滚回顶部点保存」就成了新问题——
- * 这个浮动按钮解决它。
+ * 页头不再吸顶后，「滚到下面改完样式还要滚回顶部点保存」成了新问题——
+ * 这组按钮解决它。
+ *
+ * ## 只在页头滚出视野时出现
+ * 一直飘着会挡住右下角内容（尤其缩略图与右栏预览底部）。顶部本来就有
+ * 同样的按钮，**看不到时才需要替补**——由 `IntersectionObserver` 控制
+ * `v-if`（见脚本里的 `headVisible`），不是靠滚动阈值判断。
  *
  * `z-index` 高于右栏预览（20）与导航（30）：它是操作入口，不能被盖住。
  */
-.floating-save {
+.floating-actions {
   position: fixed;
   right: 20px;
   bottom: 20px;
   z-index: 60;
-  padding: 9px 16px;
-  border: 1px solid var(--bsr-accent);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--bsr-border);
   border-radius: 999px;
-  background: var(--bsr-accent);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
+  /* 半透明白底 + 模糊：叠在面板预览上时也不至于糊成一片 */
+  background: color-mix(in srgb, var(--bsr-bg-elevated) 88%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 26px rgb(90 68 80 / 18%);
+}
+
+/*
+ * 浮动按钮的基础样式。
+ * ⚠️ 必须写全（边框/圆角/底色）——本项目多次出现按钮"裸奔"成浏览器默认外观，
+ * 根因都是基础样式挂在别的选择器上、这里的按钮不在其中。
+ */
+.floating-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 999px;
+  background: var(--bsr-bg-elevated);
+  color: var(--bsr-fg);
+  font-size: 12.5px;
+  line-height: 1.4;
   cursor: pointer;
-  box-shadow: 0 6px 20px color-mix(in srgb, var(--bsr-accent) 38%, transparent);
-  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease, background 0.12s ease;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease,
+    background 0.12s ease, border-color 0.12s ease;
 }
 
-.floating-save:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 9px 26px color-mix(in srgb, var(--bsr-accent) 46%, transparent);
+.floating-btn:hover:not(:disabled) {
+  border-color: var(--bsr-accent);
+  background: var(--bsr-accent-soft);
 }
 
-.floating-save:disabled {
-  opacity: 0.55;
+.floating-btn:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
+/* 主操作（保存）：实心主题色，一眼能分辨 */
+.floating-btn.is-primary {
+  border-color: var(--bsr-accent);
+  background: var(--bsr-accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.floating-btn.is-primary:hover:not(:disabled) {
+  background: var(--bsr-accent);
+  filter: brightness(1.06);
+}
+
 /* 保存成功时短暂变绿，给一个不打扰的反馈 */
-.floating-save.is-saved {
-  background: var(--bsr-success);
+.floating-btn.is-primary.is-saved {
   border-color: var(--bsr-success);
-  box-shadow: 0 6px 20px color-mix(in srgb, var(--bsr-success) 38%, transparent);
+  background: var(--bsr-success);
+}
+
+/* 出现/消失：轻微上移淡入，避免突然弹出 */
+.float-fade-enter-active,
+.float-fade-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.float-fade-enter-from,
+.float-fade-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 .card {

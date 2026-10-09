@@ -140,6 +140,53 @@ async function saveSettings(): Promise<void> {
 
 /** 是否已就绪。 */
 const ready = computed(() => draft.value !== null)
+
+// ── 右下角浮动操作（重置 / 保存）────────────────────────────────────────
+
+/** 页头元素，用于观察它是否还在视野里。 */
+const pageHeadEl = ref<HTMLElement | null>(null)
+
+/** 页头是否**完全**在视野内（初始 true：刚打开时它就在顶部）。 */
+const headVisible = ref(true)
+
+/**
+ * 是否显示右下角浮动操作。
+ *
+ * 用 `IntersectionObserver` 而不是比较 `scrollTop`：页头高度会随标题换行、
+ * 窗口宽度变化，写死阈值必然在某处不准；观察元素本身则自动适应。
+ *
+ * `root` 必须明确指向滚动容器 `.app-body`——否则观察的是与**视口**的交叉，
+ * 而页头一直在视口里（只是被容器裁掉了），永远不会触发。
+ */
+const showFloatingActions = computed(() => ready.value && !headVisible.value)
+
+let headObserver: IntersectionObserver | null = null
+
+watch(
+  pageHeadEl,
+  (el, _old, onCleanup) => {
+    headObserver?.disconnect()
+    headObserver = null
+    if (!el) {
+      headVisible.value = true
+      return
+    }
+    const root = el.closest('.app-body')
+    headObserver = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[entries.length - 1]
+        if (entry) headVisible.value = entry.isIntersecting
+      },
+      { root: root instanceof Element ? root : null, threshold: 0 },
+    )
+    headObserver.observe(el)
+    onCleanup(() => {
+      headObserver?.disconnect()
+      headObserver = null
+    })
+  },
+  { flush: 'post' },
+)
 </script>
 
 <template>
@@ -152,7 +199,7 @@ const ready = computed(() => draft.value !== null)
     -->
     <NavTabs :model-value="null" />
 
-    <div class="page-head">
+    <div ref="pageHeadEl" class="page-head">
       <h2>基础设置</h2>
       <div class="controls">
         <button class="ghost" :disabled="!ready" @click="resetDraft()">重置</button>
@@ -167,17 +214,36 @@ const ready = computed(() => draft.value !== null)
       刻意放在最前面：它改的是**整个软件的观感**，一眼就能看到效果，
       而下面的服务器/规则是"配一次就不动"的东西。
     -->
-    <!-- 右下角浮动保存：页头不吸顶了，滚到下面也能直接存 -->
-    <button
-      v-if="ready && draft"
-      class="floating-save"
-      :class="{ 'is-saved': saved }"
-      :disabled="saving"
-      title="保存配置（不必滚回顶部）"
-      @click="saveSettings()"
-    >
-      {{ saving ? '保存中…' : saved ? '✓ 已保存' : '保存' }}
-    </button>
+    <!--
+      右下角浮动的「重置 / 保存」。
+      页头不吸顶了，滚到下面改完设置时靠它操作，不必滚回顶部。
+
+      ## 为什么只在页头滚出视野后才出现
+      一直飘着会挡住右下角内容。顶部本来就有同样的两个按钮，
+      **看不到它们时才需要这个替补**——由 IntersectionObserver 控制
+      （见脚本里的 headVisible），不是靠写死的滚动阈值。
+    -->
+    <Transition name="float-fade">
+      <div v-if="showFloatingActions" class="floating-actions">
+        <button
+          class="floating-btn"
+          :disabled="!ready"
+          title="放弃改动，恢复成已保存的配置"
+          @click="resetDraft()"
+        >
+          重置
+        </button>
+        <button
+          class="floating-btn is-primary"
+          :class="{ 'is-saved': saved }"
+          :disabled="!ready || saving"
+          title="保存配置（不必滚回顶部）"
+          @click="saveSettings()"
+        >
+          {{ saving ? '保存中…' : saved ? '✓ 已保存' : '保存' }}
+        </button>
+      </div>
+    </Transition>
 
     <section v-if="ready && draft" class="card">
       <h4>软件外观</h4>
@@ -334,39 +400,89 @@ const ready = computed(() => draft.value !== null)
 }
 
 /*
- * 右下角浮动的「保存」。
- * 页头不吸顶后，滚到下面改设置时靠它保存，不必滚回顶部。
+ * 右下角浮动的「重置 / 保存」。
+ *
+ * 页头不再吸顶后，「滚到下面改完设置还要滚回顶部点保存」成了新问题——
+ * 这组按钮解决它。
+ *
+ * ## 只在页头滚出视野时出现
+ * 一直飘着会挡住右下角内容。顶部本来就有同样的两个按钮，
+ * **看不到时才需要替补**——由 `IntersectionObserver` 控制 `v-if`。
+ *
+ * `z-index` 高于导航（30），它是操作入口，不能被盖住。
  */
-.floating-save {
+.floating-actions {
   position: fixed;
   right: 20px;
   bottom: 20px;
   z-index: 60;
-  padding: 9px 16px;
-  border: 1px solid var(--bsr-accent);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--bsr-border);
   border-radius: 999px;
-  background: var(--bsr-accent);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
+  background: color-mix(in srgb, var(--bsr-bg-elevated) 88%, transparent);
+  backdrop-filter: blur(6px);
+  box-shadow: 0 8px 26px rgb(90 68 80 / 18%);
+}
+
+/*
+ * 浮动按钮基础样式。
+ * ⚠️ 必须写全（边框/圆角/底色）——本项目多次出现按钮"裸奔"成浏览器默认外观，
+ * 根因都是基础样式挂在别的选择器上、这里的按钮不在其中。
+ */
+.floating-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--bsr-border);
+  border-radius: 999px;
+  background: var(--bsr-bg-elevated);
+  color: var(--bsr-fg);
+  font-size: 12.5px;
+  line-height: 1.4;
   cursor: pointer;
-  box-shadow: 0 6px 20px color-mix(in srgb, var(--bsr-accent) 38%, transparent);
-  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease, background 0.12s ease;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease,
+    background 0.12s ease, border-color 0.12s ease;
 }
 
-.floating-save:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 9px 26px color-mix(in srgb, var(--bsr-accent) 46%, transparent);
+.floating-btn:hover:not(:disabled) {
+  border-color: var(--bsr-accent);
+  background: var(--bsr-accent-soft);
 }
 
-.floating-save:disabled {
-  opacity: 0.55;
+.floating-btn:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
-.floating-save.is-saved {
-  background: var(--bsr-success);
+/* 主操作（保存）：实心主题色 */
+.floating-btn.is-primary {
+  border-color: var(--bsr-accent);
+  background: var(--bsr-accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.floating-btn.is-primary:hover:not(:disabled) {
+  background: var(--bsr-accent);
+  filter: brightness(1.06);
+}
+
+.floating-btn.is-primary.is-saved {
   border-color: var(--bsr-success);
+  background: var(--bsr-success);
+}
+
+/* 出现/消失：轻微上移淡入 */
+.float-fade-enter-active,
+.float-fade-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.float-fade-enter-from,
+.float-fade-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 .card {
